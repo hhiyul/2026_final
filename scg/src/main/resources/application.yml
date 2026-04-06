@@ -1,0 +1,21 @@
+server:
+  port: 8080
+
+spring:
+  cloud:
+    gateway:
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOrigins: "*"
+            allowedMethods: "*"
+            allowedHeaders: "*" # X-API-Key ??? ?? ??
+
+      routes:
+        - id: old-fastapi-test
+          uri: http://localhost:8000
+          predicates:
+            - Path=/**
+          filters:
+            # /test/infer ? ???? /infer ? ??? FastAPI? ????
+            - RewritePath=/test/(?<segment>.*), /$\{segment}
