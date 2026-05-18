@@ -15,7 +15,7 @@ spring:
         - id: old-fastapi-test
           uri: http://localhost:8000
           predicates:
-            - Path=/**
+            - Path=/api/fashion/**
           filters:
             # /test/infer ? ???? /infer ? ??? FastAPI? ????
-            - RewritePath=/test/(?<segment>.*), /$\{segment}
+            - RewritePath=/api/fashion/(?<segment>.*), /$\{segment}
