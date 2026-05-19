@@ -1,16 +1,48 @@
-# Compiled class file
+# ==========================================
+# 🌟 공통 보안 및 환경 변수 (절대 깃허브에 올라가면 안 됨!)
+# ==========================================
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+*.pem
+*.key
+
+# ==========================================
+# ⚛️ React / Node.js (프론트엔드)
+# ==========================================
+node_modules/
+build/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.eslintcache
+
+# ==========================================
+# 🐍 Python / FastAPI (딥러닝 백엔드)
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+pip-log.txt
+.pytest_cache/
+
+# ==========================================
+# 🍃 Spring Boot / Java / Gradle (게이트웨이)
+# ==========================================
+.gradle/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+out/
 *.class
-
-# Log file
 *.log
-
-# BlueJ files
 *.ctxt
-
-# Mobile Tools for Java (J2ME)
 .mtj.tmp/
-
-# Package Files #
 *.jar
 *.war
 *.nar
@@ -18,10 +50,29 @@
 *.zip
 *.tar.gz
 *.rar
-
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
-
-# Kotlin Gradle plugin data, see https://kotlinlang.org/docs/whatsnew20.html#new-directory-for-kotlin-data-in-gradle-projects
 .kotlin/
+
+# ==========================================
+# 🐳 Docker & Database (볼륨 데이터)
+# ==========================================
+# 나중에 MongoDB 등을 붙일 때, 로컬에 쌓이는 실제 DB 데이터가 올라가는 것을 방지
+data/
+db_data/
+mongodb_data/
+mongo_data/
+
+# ==========================================
+# 💻 OS 및 에디터 (맥북/윈도우/VSCode 쓰레기 파일)
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+.idea/
+.vscode/
+*.iml
+*.swp

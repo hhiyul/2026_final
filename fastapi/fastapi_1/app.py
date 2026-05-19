@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+from fastapi.concurrency import run_in_threadpool
 from pathlib import Path
 from threading import Lock
 from typing import Tuple
@@ -14,7 +15,8 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from PIL import Image, UnidentifiedImageError
 from fastapi.security import APIKeyHeader
-from .models import VAL_TRANSFORM, load_cmt_model
+from    models import VAL_TRANSFORM, load_cmt_model
+from typing import List
 
 LABEL_KR = { #추후 수정
     "freshapples": "Fresh Apples",
@@ -26,7 +28,7 @@ LABEL_KR = { #추후 수정
     "freshtomato": "Fresh Tomato",
 
     "rottenapples": "Rotten Apples",
-    "rottenbanana": "Rotten Banana",
+    "rottenbanana": "블레이저",
     "rottencapsicum": "Rotten Capsicum",
     "rottencucumber": "Rotten Cucumber",
     "rottenoranges": "Rotten Oranges",
@@ -141,8 +143,9 @@ app.add_middleware(
 model_service = ModelService(MODEL_PATH, LABELS_PATH)
 
 #API키
-API_KEY = "fuck-key-123"
+API_KEY = os.getenv("API_KEY", "default-dev-key")
 API_KEY_NAME = "X-API-Key"
+
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 #api키 맞나 체크하는거 틀리면 오류코드 반환
@@ -261,9 +264,6 @@ $("btn").addEventListener("click", async () => {
   try {
     const res = await fetch("/infer", {
       method: "POST",
-      headers: {
-        "X-API-Key": "fuck-key-123",   // 🔑 FastAPI에서 검사하는 헤더
-      },
       body: form,
     });
 
@@ -287,18 +287,40 @@ $("btn").addEventListener("click", async () => {
         """.strip()
     )
 
+
 @app.post("/infer", summary="딥러닝추론", response_model=InferenceResponse, dependencies=[Depends(check_api_key)])
-async def infer(file: UploadFile = File(...)):
-    blob = await file.read()
-    if not blob:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
-    pred, conf = model_service.predict(blob)
-    pred_kr = LABEL_KR.get(pred, pred)
+async def infer(files: List[UploadFile] = File(...)):
+
+    if not files or len(files) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded files are empty")
+
+    predictions = []
+    total_conf = 0.0
+
+    # 💡 핵심 2: 들어온 여러 장의 사진을 반복문으로 모두 돌려줍니다.
+    for file in files:
+        blob = await file.read()
+
+        # 각 이미지마다 딥러닝 추론 (비동기 스레드풀 사용)
+        pred, conf = await run_in_threadpool(model_service.predict, blob)
+
+        # 한국어 라벨로 변환 후 리스트에 저장
+        pred_kr = LABEL_KR.get(pred, pred)
+        predictions.append(pred_kr)
+        total_conf += conf
+
+    # 여러 벌의 옷을 분석한 결과를 하나로 예쁘게 합칩니다.
+    # 예: "맨투맨, 데님 팬츠, 스니커즈"
+    combined_prediction = ", ".join(predictions)
+
+    # 평균 정확도 계산
+    avg_conf = total_conf / len(files)
+
     return InferenceResponse(
-        filename=file.filename or "uploaded_image",
-        content_type=file.content_type,
-        size_bytes=len(blob),
-        prediction=pred_kr,
-        confidence=conf,
+        filename=f"총 {len(files)}장의 이미지",
+        content_type="multipart/form-data",
+        size_bytes=0, # 다중 파일이므로 생략하거나 전체 합산 가능
+        prediction=combined_prediction,
+        confidence=avg_conf,
     )
 

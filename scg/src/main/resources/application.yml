@@ -4,18 +4,49 @@ server:
 spring:
   cloud:
     gateway:
+      default-filters:
+        - DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials, RETAIN_FIRST
       globalcors:
         cors-configurations:
           '[/**]':
-            allowedOrigins: "*"
-            allowedMethods: "*"
-            allowedHeaders: "*" # X-API-Key ??? ?? ??
-
+            allowedOrigins:
+              - "http://localhost:3000"
+              - "http://127.0.0.1:3000"
+            allowedMethods:
+              - "GET"
+              - "POST"
+              - "OPTIONS" # 💡 브라우저의 사전 요청(Preflight) 허용
+            allowedHeaders: "*"
+            allowCredentials: true # 💡 인증 정보가 담긴 요청도 허용
       routes:
-        - id: old-fastapi-test
-          uri: http://localhost:8000
+        - id: fastapi-infer-node-1
+          uri: http://fastapi-container-1:8000  # 💡 다이렉트 8000번 포트
           predicates:
-            - Path=/api/fashion/**
+            - Path=/infer, /health
+            - Weight=infer-group, 5
           filters:
-            # /test/infer ? ???? /infer ? ??? FastAPI? ????
-            - RewritePath=/api/fashion/(?<segment>.*), /$\{segment}
+            - AddRequestHeader=X-API-Key, ${API_KEY} # 💡 API 키 주입
+
+        - id: fastapi-infer-node-2
+          uri: http://fastapi-container-2:8000
+          predicates:
+            - Path=/infer, /health
+            - Weight=infer-group, 5
+          filters:
+            - AddRequestHeader=X-API-Key, ${API_KEY}
+
+        - id: fastapi-ui-node-1
+          uri: http://fastapi-container-1:8000
+          predicates:
+            - Path=/ui
+            - Weight=ui-group, 5
+          filters:
+            - AddRequestHeader=X-API-Key, ${API_KEY}
+
+        - id: fastapi-ui-node-2
+          uri: http://fastapi-container-2:8000
+          predicates:
+            - Path=/ui
+            - Weight=ui-group, 5
+          filters:
+            - AddRequestHeader=X-API-Key, ${API_KEY}
