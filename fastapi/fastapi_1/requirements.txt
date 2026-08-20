@@ -6,3 +6,7 @@ motor
 pydantic
 Pillow
 python-multipart
+open_clip_torch
+huggingface_hub
+ultralytics
+transformers

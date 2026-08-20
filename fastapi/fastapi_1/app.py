@@ -1,326 +1,425 @@
 from __future__ import annotations
 
 import io
-import json
 import os
-from fastapi.concurrency import run_in_threadpool
+import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
-from threading import Lock
-from typing import Tuple
-import torch
-import torch.nn.functional as F
-from fastapi import FastAPI, File, HTTPException, UploadFile, Depends
+from typing import List, Optional
+
+import numpy as np
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
-from PIL import Image, UnidentifiedImageError
-from fastapi.security import APIKeyHeader
-from    models import VAL_TRANSFORM, load_cmt_model
-from typing import List
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
-LABEL_KR = { #추후 수정
-    "freshapples": "Fresh Apples",
-    "freshbanana": "Fresh Banana",
-    "freshcapsicum": "Fresh Capsicum",
-    "freshcucumber": "Fresh Cucumber",
-    "freshoranges": "Fresh Oranges",
-    "freshpotato": "Fresh Potato",
-    "freshtomato": "Fresh Tomato",
+# ---------------------------------------------------------
+# 모델 및 파이프라인 임포트 (model_pt 폴더 기준)
+# ---------------------------------------------------------
+from model_pt.inference import FashionPipeline, Garment, Hit
+from model_pt.label_scheme import TIER1_CLASSES
 
-    "rottenapples": "Rotten Apples",
-    "rottenbanana": "블레이저",
-    "rottencapsicum": "Rotten Capsicum",
-    "rottencucumber": "Rotten Cucumber",
-    "rottenoranges": "Rotten Oranges",
-    "rottenpotato": "Rotten Potato",
-    "rottentomato": "Rotten Tomato"
-}
-
+# ---------------------------------------------------------
+# 환경 설정 및 디렉터리 세팅
+# ---------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
 
-def _path_from_env_or_default(env_var: str, *relative: str) -> Path:
-    v = os.getenv(env_var)
-    if v:
-        p = Path(v)
-        if not p.is_absolute():
-            p = BASE_DIR / p
-        return p.resolve()
-    return (BASE_DIR.joinpath(*relative)).resolve()
+MODEL_PATH = os.getenv("MODEL_PATH", str(BASE_DIR / "model_pt" / "best.pt"))
+THUMBNAILS_DIR = Path(os.getenv("THUMBNAILS_DIR", str(BASE_DIR / "thumbnails")))
+THUMBNAILS_DIR.mkdir(parents=True, exist_ok=True)
 
-MODEL_PATH  = _path_from_env_or_default("MODEL_PATH",  "model_pt", "best_model_fold1.pt")
-LABELS_PATH = _path_from_env_or_default("LABELS_PATH", "model_pt", "label_names.json")
-
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# 전역 파이프라인 및 인메모리 DB
+pipe: Optional[FashionPipeline] = None
+GARMENTS_DB: List[dict] = []  # MongoDB 대신 사용할 인메모리 저장소
 
 
-if not MODEL_PATH.exists():
-    raise FileNotFoundError(f"Model checkpoint not found: {MODEL_PATH}")
-if not LABELS_PATH.exists():
-    raise FileNotFoundError(f"Label file not found: {LABELS_PATH}")
+# ---------------------------------------------------------
+# 수명 주기 관리 (Lifespan: 1회 로드 & 워밍업)
+# ---------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global pipe
+    print("=" * 50)
+    print("🚀 Fashion AI Pipeline 초기화 중 (인메모리 모드)...")
+
+    # FashionPipeline 싱글톤 로딩 및 워밍업
+    pipe = FashionPipeline(detector_weights=MODEL_PATH)
+    pipe.warmup()  #[cite: 1]
+    print(f"🎯 AI Model Loaded: {MODEL_PATH}")
+    print(f"🏷️ Categories: {pipe.categories}")  #[cite: 1]
+    print("=" * 50)
+
+    yield
+
+    print("🛑 서버가 안전하게 종료되었습니다.")
 
 
-class InferenceResponse(BaseModel):
-    filename: str
-    content_type: str | None
-    size_bytes: int
-    prediction: str
-    confidence: float
-
-
-# ----------------------------
-class ModelService:
-    def __init__(self, model_path: Path, labels_path: Path) -> None:
-        self.model_path = model_path
-        self.labels_path = labels_path
-        self.device = DEVICE
-        self.transform = VAL_TRANSFORM
-        self._model: torch.nn.Module | None = None
-        self._labels: list[str] = []
-        self._lock = Lock()
-
-    def ensure_loaded(self) -> None:
-        if self._model is None:
-            with self._lock:
-                if self._model is None:
-                    self._load()
-
-    def _load(self) -> None:
-        if not self.model_path.exists():
-            raise FileNotFoundError(f"Model checkpoint not found: {self.model_path}")
-        if not self.labels_path.exists():
-            raise FileNotFoundError(f"Label file not found: {self.labels_path}")
-
-        with self.labels_path.open("r", encoding="utf-8") as f:
-            labels = json.load(f)
-        if not isinstance(labels, list) or not all(isinstance(s, str) for s in labels) or not labels:
-            raise ValueError("json이 이상해요")
-
-        model, missing, unexpected = load_cmt_model(
-            model_path=self.model_path, num_classes=len(labels), device=self.device
-        )
-        if missing:
-            print("[load] missing keys:", list(missing))
-        if unexpected:
-            print("[load] unexpected keys:", list(unexpected))
-
-        self._model = model.to(self.device).eval()
-        self._labels = list(labels)
-        torch.set_num_threads(1)  # CPU 서버면 과한 스레드 방지(상황 맞게 조절)
-
-    def predict(self, image_bytes: bytes) -> Tuple[str, float]:
-        self.ensure_loaded()
-        assert self._model is not None
-        assert self._labels
-
-        try:
-            pil = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
-        except (UnidentifiedImageError, OSError) as exc:
-            raise HTTPException(status_code=400, detail="Uploaded file is not a valid image") from exc
-
-        x = self.transform(pil).unsqueeze(0).to(self.device)
-        with torch.inference_mode():
-            logits = self._model(x)
-            probs = F.softmax(logits, dim=1).squeeze(0)
-            conf, idx = probs.max(dim=0)
-        label = self._labels[int(idx)]
-        return label, float(conf)
-
-
-# ----------------------------
-# FastAPI 앱 & 라우트
-# ----------------------------
+# ---------------------------------------------------------
+# FastAPI 앱 인스턴스
+# ---------------------------------------------------------
 app = FastAPI(
-    title="융소프",
-    description="딥러닝이에요"
-    )
+    title="Fashion Recommendation API (In-Memory)",
+    description="Vision Mamba/YOLO 검출 및 FashionSigLIP 기반 임베딩 추천",
+    version="2.0.0",
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-model_service = ModelService(MODEL_PATH, LABELS_PATH)
+# 크롭 썸네일 서빙용 정적 폴더 마운트
+app.mount("/thumbnails", StaticFiles(directory=str(THUMBNAILS_DIR)), name="thumbnails")
 
-#API키
-API_KEY = os.getenv("API_KEY", "default-dev-key")
-API_KEY_NAME = "X-API-Key"
 
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+# ---------------------------------------------------------
+# Pydantic DTO 스키마
+# ---------------------------------------------------------
+class GarmentItemResponse(BaseModel):
+    garment_id: str
+    category: str
+    bbox: List[float]
+    conf: float
+    area_ratio: float
+    thumbnail_url: str
 
-#api키 맞나 체크하는거 틀리면 오류코드 반환
-async def check_api_key(api_key: str = Depends(api_key_header)):
-    if api_key != API_KEY:
-        raise HTTPException(status_code=403, detail="api키 분실됨")
-    return api_key
 
-@app.get("/", summary="홈")
+class RegisterGarmentsResponse(BaseModel):
+    message: str
+    user_id: str
+    registered_items: List[GarmentItemResponse]
+
+
+class AnalyzeResponse(BaseModel):
+    total_detected: int
+    items: List[dict]
+
+
+class RecommendRequest(BaseModel):
+    user_id: str = Field(..., description="사용자 식별 고유 ID")
+    query: str = Field(..., description="자연어 추천 쿼리 (예: '쿨톤 스트릿하게')")
+    category: Optional[str] = Field(None, description="outerwear|top|bottom|headwear 필터")
+    top_k: int = Field(5, ge=1, le=20, description="반환할 상위 결과 개수")
+
+
+class RecommendResultItem(BaseModel):
+    garment_id: str
+    category: str
+    rank: int
+    score: float
+    thumbnail_url: str
+    bbox: List[float]
+    created_at: str
+
+
+class RecommendResponse(BaseModel):
+    query: str
+    total_results: int
+    results: List[RecommendResultItem]
+
+
+# ---------------------------------------------------------
+# 라우트
+# ---------------------------------------------------------
+@app.get("/", summary="루트 헬스체크")
 def root():
-    return {"message": "정상작동 중"}
+    return {"status": "online", "mode": "in-memory (no MongoDB)"}
 
 
-@app.get("/health", summary="연결상태확인", dependencies=[Depends(check_api_key)])
+@app.get("/health", summary="시스템 상태 상세 확인")
 def health():
-    """
-    api 연결상태 정상인지 확인하는 기능
-    """
     return {
-        "model_loaded": model_service._model is not None,
-        "labels_loaded": bool(model_service._labels),
-        "device": str(DEVICE),
-        "model_path": str(MODEL_PATH),
-        "labels_path": str(LABELS_PATH),
+        "model_loaded": pipe is not None and pipe._detector is not None,
+        "device": str(pipe.device) if pipe else "unknown",
+        "detector_weights": MODEL_PATH,
+        "categories": pipe.categories if pipe else [],
+        "thumbnails_dir": str(THUMBNAILS_DIR),
+        "total_saved_garments": len(GARMENTS_DB),
     }
 
 
-# ✅ 시각테스트용 UI 다 만들면 없앨거임
-@app.get("/ui", summary="시각용ui", response_class=HTMLResponse)
-def ui():
-    """
-    테스트용 뒤에서 돌아가는지 시각화함
-    """
+@app.post(
+    "/garments",
+    summary="옷 등록 (대표 박스 추출 + 임베딩 메모리 저장 + 썸네일 생성)",
+    response_model=RegisterGarmentsResponse,
+)
+async def register_garments(
+        user_id: str = Form(..., description="사용자 ID (비회원 UUID 또는 회원 ID)"),
+        file: UploadFile = File(...),
+):
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="이미지 파일만 업로드 가능합니다.")
+
+    image_bytes = await file.read()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="업로드된 파일이 비어 있습니다.")
+
+    # dedup=True로 대표 박스 1개만 추출[cite: 1, 4]
+    items: List[Garment] = pipe.analyze(image_bytes, dedup=True)
+
+    saved_items = []
+    for g in items:
+        gid = f"g_{uuid.uuid4().hex[:12]}"
+        thumb_filename = f"{gid}.jpg"
+        thumb_filepath = THUMBNAILS_DIR / thumb_filename
+
+        # 썸네일 이미지 로컬 저장[cite: 1]
+        g.crop.save(thumb_filepath, format="JPEG", quality=92)
+        thumb_url = f"/thumbnails/{thumb_filename}"
+
+        # 인메모리 리스트에 적재[cite: 1]
+        doc = {
+            "garment_id": gid,
+            "user_id": user_id,
+            "category": g.category,
+            "bbox": [round(v, 4) for v in g.bbox],
+            "conf": round(g.conf, 4),
+            "area_ratio": round(g.area_ratio, 4),
+            "embedding": g.embedding.tolist(),
+            "thumbnail_url": thumb_url,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        GARMENTS_DB.append(doc)
+
+        saved_items.append(
+            GarmentItemResponse(
+                garment_id=gid,
+                category=g.category,
+                bbox=doc["bbox"],
+                conf=doc["conf"],
+                area_ratio=doc["area_ratio"],
+                thumbnail_url=thumb_url,
+            )
+        )
+
+    return RegisterGarmentsResponse(
+        message="옷 등록 및 임베딩 저장이 완료되었습니다.",
+        user_id=user_id,
+        registered_items=saved_items,
+    )
+
+
+@app.post("/analyze", summary="착용샷 분석 (다중 검출, 저장 안 함)", response_model=AnalyzeResponse)
+async def analyze_outfit(file: UploadFile = File(...)):
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="이미지 파일만 업로드 가능합니다.")
+
+    image_bytes = await file.read()
+    # 착용샷 분석은 dedup=False[cite: 1, 4]
+    items: List[Garment] = pipe.analyze(image_bytes, dedup=False)
+
+    return AnalyzeResponse(
+        total_detected=len(items),
+        items=[g.to_dict(with_embedding=False) for g in items],
+    )
+
+
+@app.post("/recommend", summary="코디 추천 (임베딩 유사도 랭킹)", response_model=RecommendResponse)
+async def recommend_outfit(req: RecommendRequest):
+    # 인메모리에서 user_id에 해당하는 옷 목록 추출[cite: 1]
+    rows = [r for r in GARMENTS_DB if r["user_id"] == req.user_id]
+
+    if not rows:
+        raise HTTPException(
+            status_code=404,
+            detail=f"해당 사용자({req.user_id})의 등록된 옷이 없습니다. 먼저 /garments 로 옷을 등록해 주세요.",
+        )
+
+    embs = np.array([r["embedding"] for r in rows], dtype=np.float32)
+
+    # 카테고리 필터 마스크[cite: 1, 4]
+    mask = [r["category"] == req.category for r in rows] if req.category else None
+
+    # 추천 연산 실행[cite: 1, 4]
+    hits: List[Hit] = pipe.recommend(req.query, embs, top_k=req.top_k, mask=mask)
+
+    results = []
+    for h in hits:
+        matched_row = rows[h.index]
+        results.append(
+            RecommendResultItem(
+                garment_id=matched_row["garment_id"],
+                category=matched_row["category"],
+                rank=h.rank,
+                score=round(h.score, 4),
+                thumbnail_url=matched_row["thumbnail_url"],
+                bbox=matched_row["bbox"],
+                created_at=matched_row.get("created_at", ""),
+            )
+        )
+
+    return RecommendResponse(
+        query=req.query,
+        total_results=len(results),
+        results=results,
+    )
+
+
+@app.get("/garments", summary="등록된 옷장 목록 조회")
+def get_user_garments(
+        user_id: str = Query(..., description="사용자 ID"),
+        category: Optional[str] = Query(None, description="특정 카테고리 필터"),
+):
+    user_rows = [r for r in GARMENTS_DB if r["user_id"] == user_id]
+    if category:
+        user_rows = [r for r in user_rows if r["category"] == category]
+
+    items = [{k: v for k, v in r.items() if k != "embedding"} for r in user_rows]
+    return {"user_id": user_id, "count": len(items), "items": items}
+
+
+# ---------------------------------------------------------
+## ---------------------------------------------------------
+# 테스트 UI (/ui) - 시각화 렌더링 개선
+# ---------------------------------------------------------
+@app.get("/ui", summary="테스트용 UI", response_class=HTMLResponse)
+def test_ui():
     return HTMLResponse(
         """
 <!doctype html>
 <html lang="ko">
 <head>
   <meta charset="utf-8"/>
-  <title>Inference UI</title>
+  <title>Fashion AI Pipeline Test (In-Memory)</title>
   <style>
-          body {
-        font-family: system-ui, -apple-system, sans-serif;
-        margin: 0;
-        padding: 0;
+    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 30px auto; padding: 20px; background: #f9fafb; color: #333; }
+    h2 { text-align: center; margin-bottom: 25px; }
+    .box { background: white; border: 1px solid #e5e7eb; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    input, button { width: 100%; margin-top: 8px; padding: 10px; box-sizing: border-box; border-radius: 6px; }
+    input { border: 1px solid #d1d5db; }
+    button { background: #2563eb; color: white; border: none; font-weight: bold; cursor: pointer; transition: 0.2s; }
+    button:hover { background: #1d4ed8; }
     
-        display: flex;
-        flex-direction: column;
-        align-items: center;   /* 🔹 h2 포함 전체 가로 중앙 */
-        min-height: 100vh;
-      }
-    
-      h2 {
-        margin-top: 40px;      /* 🔹 위 여백 */
-        text-align: center;
-      }
-    
-      /* 🔹 카드만 화면의 남은 공간에서 수직 중앙 정렬 */
-      .card {
-        margin-top: auto;
-        margin-bottom: auto;
-    
-        max-width: 520px;
-        padding: 20px;
-        border: 1px solid #ddd;
-        border-radius: 12px;
-      }
-    .row { margin-top: 12px; }
-    img { max-width: 100%; border-radius: 8px; }
-    button { padding: 10px 14px; border-radius: 8px; border: 1px solid #ccc; cursor:pointer; }
-    #result { margin-top: 10px; font-weight: 600; }
-    #err { color: #b00020; margin-top: 8px; }
+    /* 썸네일 카드 갤러리 스타일 */
+    .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 15px; margin-top: 15px; }
+    .item-card { background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.04); }
+    .item-card img { width: 100%; height: 160px; object-fit: contain; background: #f3f4f6; border-radius: 6px; margin-bottom: 8px; border: 1px solid #eee; }
+    .rank-badge { display: inline-block; background: #10b981; color: white; font-weight: bold; font-size: 12px; padding: 2px 8px; border-radius: 12px; margin-bottom: 4px; }
+    .item-title { font-weight: bold; font-size: 14px; margin: 4px 0; }
+    .item-score { font-size: 12px; color: #6b7280; }
+    pre { background: #1f2937; color: #f9fafb; padding: 12px; border-radius: 6px; overflow: auto; font-size: 12px; max-height: 250px; }
   </style>
 </head>
 <body>
-  <h2>이미지 분류 테스트</h2>
-  <div class="card">
-    <div class="row">
-      <input id="file" type="file" accept="image/*"/>
-    </div>
-    <div class="row">
-      <img id="preview" alt="preview" />
-    </div>
-    <div class="row">
-      <button id="btn">분류 요청</button>
-    </div>
-    <div id="result"></div>
-    <div id="err"></div>
+  <h2>👗 Fashion AI 추천 & 시각화 테스트</h2>
+  
+  <div class="box">
+    <h3>1. 옷 등록 (POST /garments)</h3>
+    <input id="userId" type="text" value="test_user" placeholder="User ID" />
+    <input id="garmentFile" type="file" accept="image/*" />
+    <button onclick="registerGarment()">옷 등록 및 임베딩 저장</button>
   </div>
 
-<script>
-const $ = id => document.getElementById(id);
+  <div class="box">
+    <h3>2. 코디 추천 (POST /recommend)</h3>
+    <input id="recQuery" type="text" value="쿨톤 스트릿하게" placeholder="추천 쿼리 입력" />
+    <button onclick="getRecommendation()">추천 요청</button>
+  </div>
 
-// 파일 선택 시 미리보기
-$("file").addEventListener("change", (e) => {
-  const f = e.target.files[0];
-  if (!f) return;
-  const url = URL.createObjectURL(f);
-  $("preview").src = url;
-});
+  <div class="box">
+    <h3>3. 내 전체 옷장 조회 (GET /garments)</h3>
+    <button onclick="getGarments()" style="background:#4b5563;">옷장 불러오기</button>
+  </div>
 
-// 분류 요청 버튼 클릭
-$("btn").addEventListener("click", async () => {
-  $("result").textContent = "";
-  $("err").textContent = "";
+  <!-- 추천/조회 결과 이미지 갤러리 영역 -->
+  <div class="box">
+    <h3 id="galleryTitle">🖼️ 결과 이미지 뷰어</h3>
+    <div id="galleryContainer" class="card-grid">
+      <p style="color:#9ca3af; grid-column: 1/-1;">등록 또는 추천을 실행하면 이미지가 여기에 나타납니다.</p>
+    </div>
+  </div>
 
-  const f = $("file").files[0];
-  if (!f) {
-    $("err").textContent = "이미지를 선택하세요.";
-    return;
-  }
+  <div class="box">
+    <h3>📋 Raw JSON Response</h3>
+    <pre id="output">결과 로그가 여기에 출력됩니다.</pre>
+  </div>
 
-  const form = new FormData();
-  form.append("file", f);
+  <script>
+    const log = (msg) => document.getElementById("output").textContent = JSON.stringify(msg, null, 2);
 
-  try {
-    const res = await fetch("/infer", {
-      method: "POST",
-      body: form,
-    });
+    // 1. 옷 등록
+    async function registerGarment() {
+      const file = document.getElementById("garmentFile").files[0];
+      const uid = document.getElementById("userId").value;
+      if (!file) return alert("이미지를 선택하세요");
 
-    if (!res.ok) {
-      const msg = await res.text();
-      $("err").textContent = "오류: " + msg;
-      return;
+      const fd = new FormData();
+      fd.append("user_id", uid);
+      fd.append("file", file);
+
+      const res = await fetch("/garments", { method: "POST", body: fd });
+      const data = await res.json();
+      log(data);
+
+      if (data.registered_items && data.registered_items.length > 0) {
+        document.getElementById("galleryTitle").textContent = "✨ 방금 등록된 옷 (마스크 크롭 썸네일)";
+        const container = document.getElementById("galleryContainer");
+        container.innerHTML = data.registered_items.map(item => `
+          <div class="item-card">
+            <img src="${item.thumbnail_url}" alt="${item.category}" />
+            <div class="item-title">${item.category}</div>
+            <div class="item-score">신뢰도: ${(item.conf * 100).toFixed(1)}%</div>
+          </div>
+        `).join("");
+      }
     }
 
-    const data = await res.json();
-    $("result").textContent =
-      `예측: ${data.prediction}`;
+    // 2. 코디 추천 (순위 및 크롭 이미지 렌더링)
+    async function getRecommendation() {
+      const uid = document.getElementById("userId").value;
+      const q = document.getElementById("recQuery").value;
 
-  } catch (err) {
-    $("err").textContent = "요청 실패: " + err;
-  }
-});
-</script>
+      const res = await fetch("/recommend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: uid, query: q, top_k: 5 })
+      });
+      const data = await res.json();
+      log(data);
+
+      if (data.results && data.results.length > 0) {
+        document.getElementById("galleryTitle").textContent = `🎯 "${data.query}" 추천 결과 (상위 ${data.results.length}개)`;
+        const container = document.getElementById("galleryContainer");
+        container.innerHTML = data.results.map(item => `
+          <div class="item-card">
+            <span class="rank-badge">Rank #${item.rank}</span>
+            <img src="${item.thumbnail_url}" alt="${item.category}" />
+            <div class="item-title">${item.category}</div>
+            <div class="item-score">SigLIP Score: ${item.score}</div>
+          </div>
+        `).join("");
+      } else {
+        document.getElementById("galleryContainer").innerHTML = `<p style="color:#ef4444; grid-column: 1/-1;">추천 결과가 없습니다. 옷을 먼저 등록했는지 확인하세요.</p>`;
+      }
+    }
+
+    // 3. 내 옷장 목록 조회
+    async function getGarments() {
+      const uid = document.getElementById("userId").value;
+      const res = await fetch(`/garments?user_id=${uid}`);
+      const data = await res.json();
+      log(data);
+
+      if (data.items && data.items.length > 0) {
+        document.getElementById("galleryTitle").textContent = `🧺 ${uid} 님의 옷장 (${data.count}벌)`;
+        const container = document.getElementById("galleryContainer");
+        container.innerHTML = data.items.map(item => `
+          <div class="item-card">
+            <img src="${item.thumbnail_url}" alt="${item.category}" />
+            <div class="item-title">${item.category}</div>
+            <div class="item-score">ID: ${item.garment_id}</div>
+          </div>
+        `).join("");
+      }
+    }
+  </script>
 </body>
 </html>
         """.strip()
     )
-
-
-@app.post("/infer", summary="딥러닝추론", response_model=InferenceResponse, dependencies=[Depends(check_api_key)])
-async def infer(files: List[UploadFile] = File(...)):
-
-    if not files or len(files) == 0:
-        raise HTTPException(status_code=400, detail="Uploaded files are empty")
-
-    predictions = []
-    total_conf = 0.0
-
-    # 💡 핵심 2: 들어온 여러 장의 사진을 반복문으로 모두 돌려줍니다.
-    for file in files:
-        blob = await file.read()
-
-        # 각 이미지마다 딥러닝 추론 (비동기 스레드풀 사용)
-        pred, conf = await run_in_threadpool(model_service.predict, blob)
-
-        # 한국어 라벨로 변환 후 리스트에 저장
-        pred_kr = LABEL_KR.get(pred, pred)
-        predictions.append(pred_kr)
-        total_conf += conf
-
-    # 여러 벌의 옷을 분석한 결과를 하나로 예쁘게 합칩니다.
-    # 예: "맨투맨, 데님 팬츠, 스니커즈"
-    combined_prediction = ", ".join(predictions)
-
-    # 평균 정확도 계산
-    avg_conf = total_conf / len(files)
-
-    return InferenceResponse(
-        filename=f"총 {len(files)}장의 이미지",
-        content_type="multipart/form-data",
-        size_bytes=0, # 다중 파일이므로 생략하거나 전체 합산 가능
-        prediction=combined_prediction,
-        confidence=avg_conf,
-    )
-
