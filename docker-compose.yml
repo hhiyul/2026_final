@@ -1,30 +1,42 @@
-version: '3.8' # compose 파일 규격 버전 (최신 표준 버전 중 하나)
+version: '3.8'
 
 services:
-  # [1번 서비스] Spring Cloud Gateway
+  # [1번 서비스] Spring Cloud Gateway (모든 요청의 단일 창구)
   spring-gateway:
     build:
-      context: ./scg # gateway 프로젝트 폴더 경로
-      dockerfile: Dockerfile # gateway 폴더 안의 Dockerfile 파일명
+      context: ./scg
+      dockerfile: Dockerfile
     container_name: scg-container
     ports:
-      - "8080:8080" # 외부포트:내부포트 (React가 8080으로 요청을 보냄)
+      - "8080:8080" # 외부 접속용 8080 포트
     depends_on:
-      - fastapi-node-1 # 아래 FastAPI 서버들이 먼저 켜진 후 게이트웨이가 켜지도록 보장
+      - fastapi-node-1
       - fastapi-node-2
+      - react-front
     environment:
       - API_KEY=${API_KEY}
     networks:
       - backend-network
 
-  # [2번 서비스] FastAPI 복제본 1번
+  # [2번 서비스] React 프론트엔드
+  react-front:
+    build:
+      context: ./front/my-react-front
+      dockerfile: Dockerfile
+    container_name: react-container
+    ports:
+      - "80:80"
+    networks:
+      - backend-network # 💡 Gateway와 통신할 수 있도록 네트워크 추가
+
+  # [3번 서비스] FastAPI 복제본 1번
   fastapi-node-1:
     build:
-      context: ./fastapi/fastapi_1 # backend 프로젝트 폴더 경로
+      context: ./fastapi/fastapi_1
       dockerfile: Dockerfile
     container_name: fastapi-container-1
     ports:
-      - "8001:8000" # 외부에서 8001로 접속 시 1번 서버가 응답
+      - "8001:8000"
     environment:
       - SERVER_NAME=FastAPI-Server-1
       - API_KEY=${API_KEY}
@@ -32,17 +44,17 @@ services:
       - backend-network
     volumes:
       - ./fastapi/fastapi_1:/app
-      # 💡 [핵심 2] uvicorn 실행 시 맨 끝에 '--reload' 옵션을 강제로 덮어씌워 실행합니다.
-    command: uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+      - thumbnail_data_1:/app/thumbnails
+    command: uvicorn app:app --host 0.0.0.0 --port 8000
 
-  # [3번 서비스] FastAPI 복제본 2번 (똑같은 원본 코드를 바라봄)
+  # [4번 서비스] FastAPI 복제본 2번
   fastapi-node-2:
     build:
-      context: ./fastapi/fastapi_1 # 동일한 backend 프로젝트 폴더 경로를 지정!
+      context: ./fastapi/fastapi_1
       dockerfile: Dockerfile
     container_name: fastapi-container-2
     ports:
-      - "8002:8000" # 외부에서 8002로 접속 시 2번 서버가 응답
+      - "8002:8000"
     environment:
       - SERVER_NAME=FastAPI-Server-2
       - API_KEY=${API_KEY}
@@ -50,22 +62,13 @@ services:
       - backend-network
     volumes:
       - ./fastapi/fastapi_1:/app
-      # 💡 [핵심 2] uvicorn 실행 시 맨 끝에 '--reload' 옵션을 강제로 덮어씌워 실행합니다.
-    command: uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+      - thumbnail_data_2:/app/thumbnails
+    command: uvicorn app:app --host 0.0.0.0 --port 8000
 
-  react-front:
-    build:
-      context: ./front  # 💡 리액트 프로젝트 폴더 이름 (경로에 맞게 수정하세요!)
-      dockerfile: Dockerfile
-    container_name: react-container
-    ports:
-      - "3000:80"  # 외부(내 컴퓨터)에서 3000번으로 접속하면, 도커 안의 Nginx 80번 포트로 연결됨
-    depends_on:
-      - spring-gateway # 백엔드가 먼저 켜진 후 프론트가 켜지도록 설정
-    networks:
-      - backend-network
-
-# 컨테이너들이 서로 localhost가 아닌 '컨테이너 이름'으로 통신할 수 있게 묶어주는 가상 네트워크
 networks:
   backend-network:
     driver: bridge
+
+volumes:
+  thumbnail_data_1:
+  thumbnail_data_2:

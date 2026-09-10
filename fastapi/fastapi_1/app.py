@@ -27,12 +27,23 @@ from model_pt.label_scheme import TIER1_CLASSES
 BASE_DIR = Path(__file__).resolve().parent
 
 MODEL_PATH = os.getenv("MODEL_PATH", str(BASE_DIR / "model_pt" / "best.pt"))
-THUMBNAILS_DIR = Path(os.getenv("THUMBNAILS_DIR", str(BASE_DIR / "thumbnails")))
-THUMBNAILS_DIR.mkdir(parents=True, exist_ok=True)
+THUMBNAIL_DIR = "thumbnails"
+os.makedirs(THUMBNAIL_DIR, exist_ok=True)
 
-# 전역 파이프라인 및 인메모리 DB
-pipe: Optional[FashionPipeline] = None
-GARMENTS_DB: List[dict] = []  # MongoDB 대신 사용할 인메모리 저장소
+
+GARMENTS_DB: List[dict] = []
+#인메모리 방식이라 추후 삭제
+in_memory_db = {
+    "garments": {},
+    "users": {}
+}
+
+# 추후 DB 적용 시 주석풀거임
+# from motor.motor_asyncio import AsyncIOMotorClient
+# MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
+# mongo_client = None
+# mongo_db = None
+
 
 
 # ---------------------------------------------------------
@@ -53,7 +64,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    print("🛑 서버가 안전하게 종료되었습니다.")
+    print("서버 종료.")
 
 
 # ---------------------------------------------------------
@@ -75,7 +86,7 @@ app.add_middleware(
 )
 
 # 크롭 썸네일 서빙용 정적 폴더 마운트
-app.mount("/thumbnails", StaticFiles(directory=str(THUMBNAILS_DIR)), name="thumbnails")
+app.mount("/thumbnails", StaticFiles(directory=THUMBNAIL_DIR), name="thumbnails")
 
 
 # ---------------------------------------------------------
@@ -127,6 +138,7 @@ class RecommendResponse(BaseModel):
 # ---------------------------------------------------------
 # 라우트
 # ---------------------------------------------------------
+
 @app.get("/", summary="루트 헬스체크")
 def root():
     return {"status": "online", "mode": "in-memory (no MongoDB)"}
@@ -135,14 +147,18 @@ def root():
 @app.get("/health", summary="시스템 상태 상세 확인")
 def health():
     return {
-        "model_loaded": pipe is not None and pipe._detector is not None,
+        "status": "ok",
+        "model_loaded": pipe is not None and getattr(pipe, "_detector", None) is not None,
         "device": str(pipe.device) if pipe else "unknown",
-        "detector_weights": MODEL_PATH,
         "categories": pipe.categories if pipe else [],
-        "thumbnails_dir": str(THUMBNAILS_DIR),
+        "thumbnails_dir": str(THUMBNAIL_DIR),
         "total_saved_garments": len(GARMENTS_DB),
     }
 
+
+# ==========================================
+# 3. 주요 비즈니스 라우트 (옷 등록, 분석, 추천, 조회)
+# ==========================================
 
 @app.post(
     "/garments",
@@ -160,20 +176,20 @@ async def register_garments(
     if not image_bytes:
         raise HTTPException(status_code=400, detail="업로드된 파일이 비어 있습니다.")
 
-    # dedup=True로 대표 박스 1개만 추출[cite: 1, 4]
+    # dedup=True로 대표 박스 1개만 추출
     items: List[Garment] = pipe.analyze(image_bytes, dedup=True)
 
     saved_items = []
     for g in items:
         gid = f"g_{uuid.uuid4().hex[:12]}"
         thumb_filename = f"{gid}.jpg"
-        thumb_filepath = THUMBNAILS_DIR / thumb_filename
+        thumb_filepath = os.path.join(THUMBNAIL_DIR, thumb_filename)
 
-        # 썸네일 이미지 로컬 저장[cite: 1]
+        # 썸네일 이미지 로컬 저장
         g.crop.save(thumb_filepath, format="JPEG", quality=92)
         thumb_url = f"/thumbnails/{thumb_filename}"
 
-        # 인메모리 리스트에 적재[cite: 1]
+        # 인메모리 리스트에 적재
         doc = {
             "garment_id": gid,
             "user_id": user_id,
@@ -186,6 +202,10 @@ async def register_garments(
             "created_at": datetime.utcnow().isoformat(),
         }
         GARMENTS_DB.append(doc)
+
+        # [추후 MongoDB 적용 시 사용할 코드]
+        # if mongo_db is not None:
+        #     await mongo_db.garments.insert_one(doc.copy())
 
         saved_items.append(
             GarmentItemResponse(
@@ -211,7 +231,7 @@ async def analyze_outfit(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="이미지 파일만 업로드 가능합니다.")
 
     image_bytes = await file.read()
-    # 착용샷 분석은 dedup=False[cite: 1, 4]
+    # 착용샷 분석은 dedup=False
     items: List[Garment] = pipe.analyze(image_bytes, dedup=False)
 
     return AnalyzeResponse(
@@ -222,8 +242,13 @@ async def analyze_outfit(file: UploadFile = File(...)):
 
 @app.post("/recommend", summary="코디 추천 (임베딩 유사도 랭킹)", response_model=RecommendResponse)
 async def recommend_outfit(req: RecommendRequest):
-    # 인메모리에서 user_id에 해당하는 옷 목록 추출[cite: 1]
+    # 인메모리에서 user_id에 해당하는 옷 목록 추출
     rows = [r for r in GARMENTS_DB if r["user_id"] == req.user_id]
+
+    # [추후 MongoDB 적용 시 사용할 코드]
+    # if mongo_db is not None:
+    #     cursor = mongo_db.garments.find({"user_id": req.user_id})
+    #     rows = await cursor.to_list(length=1000)
 
     if not rows:
         raise HTTPException(
@@ -233,10 +258,10 @@ async def recommend_outfit(req: RecommendRequest):
 
     embs = np.array([r["embedding"] for r in rows], dtype=np.float32)
 
-    # 카테고리 필터 마스크[cite: 1, 4]
+    # 카테고리 필터 마스크
     mask = [r["category"] == req.category for r in rows] if req.category else None
 
-    # 추천 연산 실행[cite: 1, 4]
+    # 추천 연산 실행
     hits: List[Hit] = pipe.recommend(req.query, embs, top_k=req.top_k, mask=mask)
 
     results = []
@@ -272,7 +297,6 @@ def get_user_garments(
 
     items = [{k: v for k, v in r.items() if k != "embedding"} for r in user_rows]
     return {"user_id": user_id, "count": len(items), "items": items}
-
 
 # ---------------------------------------------------------
 ## ---------------------------------------------------------

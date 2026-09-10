@@ -10,3 +10,4 @@ open_clip_torch
 huggingface_hub
 ultralytics
 transformers
+opencv-python-headless

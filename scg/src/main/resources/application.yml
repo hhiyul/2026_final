@@ -10,43 +10,49 @@ spring:
         cors-configurations:
           '[/**]':
             allowedOrigins:
+              - "http://localhost"
+              - "http://localhost:80"
               - "http://localhost:3000"
               - "http://127.0.0.1:3000"
             allowedMethods:
               - "GET"
               - "POST"
-              - "OPTIONS" # 💡 브라우저의 사전 요청(Preflight) 허용
+              - "DELETE"
+              - "OPTIONS"
             allowedHeaders: "*"
-            allowCredentials: true # 💡 인증 정보가 담긴 요청도 허용
+            allowCredentials: true
       routes:
-        - id: fastapi-infer-node-1
-          uri: http://fastapi-container-1:8000  # 💡 다이렉트 8000번 포트
+        # 로드 밸런싱 일단 2개
+        - id: fastapi-node-1-route
+          uri: http://fastapi-node-1:8000
           predicates:
-            - Path=/infer, /health
-            - Weight=infer-group, 5
+            - Path=/garments/**, /recommend, /analyze, /health, /ui
+            - Weight=ai-group, 5
           filters:
-            - AddRequestHeader=X-API-Key, ${API_KEY} # 💡 API 키 주입
+            - AddRequestHeader=X-API-Key, ${API_KEY:default-key}
 
-        - id: fastapi-infer-node-2
-          uri: http://fastapi-container-2:8000
+        - id: fastapi-node-2-route
+          uri: http://fastapi-node-2:8000
           predicates:
-            - Path=/infer, /health
-            - Weight=infer-group, 5
+            - Path=/garments/**, /recommend, /analyze, /health, /ui
+            - Weight=ai-group, 5
           filters:
-            - AddRequestHeader=X-API-Key, ${API_KEY}
+            - AddRequestHeader=X-API-Key, ${API_KEY:default-key}
 
-        - id: fastapi-ui-node-1
-          uri: http://fastapi-container-1:8000
+        # 정적 썸네일 경로
+        - id: fastapi-node-1-thumbnails
+          uri: http://fastapi-node-1:8000
           predicates:
-            - Path=/ui
-            - Weight=ui-group, 5
-          filters:
-            - AddRequestHeader=X-API-Key, ${API_KEY}
+            - Path=/thumbnails/**
+            - Weight=thumb-group, 5
 
-        - id: fastapi-ui-node-2
-          uri: http://fastapi-container-2:8000
+        - id: fastapi-node-2-thumbnails
+          uri: http://fastapi-node-2:8000
           predicates:
-            - Path=/ui
-            - Weight=ui-group, 5
-          filters:
-            - AddRequestHeader=X-API-Key, ${API_KEY}
+            - Path=/thumbnails/**
+            - Weight=thumb-group, 5
+
+        - id: react-front-route
+          uri: http://react-front:80
+          predicates:
+            - Path=/**

@@ -20,7 +20,7 @@ function App() {
         // 각 파일 객체에 미리보기용 임시 URL(preview)을 생성해서 함께 저장합니다.
         const fileWithPreviews = files.map(file => ({
             fileObject: file,
-            previewUrl: URL.createObjectURL(file)
+                previewUrl: URL.createObjectURL(file)
         }));
 
         setSelectedFiles([...selectedFiles, ...fileWithPreviews]);
