@@ -11,6 +11,10 @@ RUN npm install
 # 전체 소스코드 복사
 COPY . .
 
+# .env에 주소 통잏ㅎ시킴
+ARG VITE_API_BASE_URL
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+
 # Vite 프로덕션 빌드
 RUN npm run build
 

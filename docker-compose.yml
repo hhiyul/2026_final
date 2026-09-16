@@ -1,14 +1,13 @@
 version: '3.8'
 
 services:
-  # [1번 서비스] Spring Cloud Gateway (모든 요청의 단일 창구)
   spring-gateway:
     build:
       context: ./scg
       dockerfile: Dockerfile
     container_name: scg-container
     ports:
-      - "8080:8080" # 외부 접속용 8080 포트
+      - "8080:8080"
     depends_on:
       - fastapi-node-1
       - fastapi-node-2
@@ -18,18 +17,18 @@ services:
     networks:
       - backend-network
 
-  # [2번 서비스] React 프론트엔드
   react-front:
     build:
       context: ./front/my-react-front
       dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL}
     container_name: react-container
     ports:
       - "80:80"
     networks:
-      - backend-network # 💡 Gateway와 통신할 수 있도록 네트워크 추가
+      - backend-network
 
-  # [3번 서비스] FastAPI 복제본 1번
   fastapi-node-1:
     build:
       context: ./fastapi/fastapi_1
@@ -40,14 +39,17 @@ services:
     environment:
       - SERVER_NAME=FastAPI-Server-1
       - API_KEY=${API_KEY}
+      - MONGO_DETAILS=${MONGO_DETAILS}
+      - HF_HOME=/root/.cache/huggingface
+      - HF_TOKEN=${HF_TOKEN}
     networks:
       - backend-network
     volumes:
       - ./fastapi/fastapi_1:/app
-      - thumbnail_data_1:/app/thumbnails
+      - thumbnail_data:/app/thumbnails
+      - hf_cache:/root/.cache/huggingface
     command: uvicorn app:app --host 0.0.0.0 --port 8000
 
-  # [4번 서비스] FastAPI 복제본 2번
   fastapi-node-2:
     build:
       context: ./fastapi/fastapi_1
@@ -58,11 +60,15 @@ services:
     environment:
       - SERVER_NAME=FastAPI-Server-2
       - API_KEY=${API_KEY}
+      - MONGO_DETAILS=${MONGO_DETAILS}
+      - HF_HOME=/root/.cache/huggingface
+      - HF_TOKEN=${HF_TOKEN}
     networks:
       - backend-network
     volumes:
       - ./fastapi/fastapi_1:/app
-      - thumbnail_data_2:/app/thumbnails
+      - thumbnail_data:/app/thumbnails
+      - hf_cache:/root/.cache/huggingface
     command: uvicorn app:app --host 0.0.0.0 --port 8000
 
 networks:
@@ -70,5 +76,5 @@ networks:
     driver: bridge
 
 volumes:
-  thumbnail_data_1:
-  thumbnail_data_2:
+  thumbnail_data:
+  hf_cache:

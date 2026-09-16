@@ -6,6 +6,7 @@ spring:
     gateway:
       default-filters:
         - DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials, RETAIN_FIRST
+
       globalcors:
         cors-configurations:
           '[/**]':
@@ -21,37 +22,41 @@ spring:
               - "OPTIONS"
             allowedHeaders: "*"
             allowCredentials: true
+
       routes:
-        # 로드 밸런싱 일단 2개
+        # FastAPI 1번
         - id: fastapi-node-1-route
           uri: http://fastapi-node-1:8000
           predicates:
-            - Path=/garments/**, /recommend, /analyze, /health, /ui
+            - Path=/garments/**, /recommend, /analyze, /health, /ui, /users
             - Weight=ai-group, 5
           filters:
             - AddRequestHeader=X-API-Key, ${API_KEY:default-key}
 
+        # FastAPI 2번
         - id: fastapi-node-2-route
           uri: http://fastapi-node-2:8000
           predicates:
-            - Path=/garments/**, /recommend, /analyze, /health, /ui
+            - Path=/garments/**, /recommend, /analyze, /health, /ui, /users
             - Weight=ai-group, 5
           filters:
             - AddRequestHeader=X-API-Key, ${API_KEY:default-key}
 
-        # 정적 썸네일 경로
+        # 정적 썸네일 - 1번
         - id: fastapi-node-1-thumbnails
           uri: http://fastapi-node-1:8000
           predicates:
             - Path=/thumbnails/**
             - Weight=thumb-group, 5
 
+        # 정적 썸네일 - 2번
         - id: fastapi-node-2-thumbnails
           uri: http://fastapi-node-2:8000
           predicates:
             - Path=/thumbnails/**
             - Weight=thumb-group, 5
 
+        # React
         - id: react-front-route
           uri: http://react-front:80
           predicates:

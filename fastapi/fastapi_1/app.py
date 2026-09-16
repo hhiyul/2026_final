@@ -7,8 +7,11 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
-
 import numpy as np
+from pymongo import MongoClient
+from pymongo.server_api import ServerApi
+from pwdlib import PasswordHash
+
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -30,36 +33,46 @@ MODEL_PATH = os.getenv("MODEL_PATH", str(BASE_DIR / "model_pt" / "best.pt"))
 THUMBNAIL_DIR = "thumbnails"
 os.makedirs(THUMBNAIL_DIR, exist_ok=True)
 
+# MongoDB Atlas 연동
+MONGO_DETAILS = os.getenv("MONGO_DETAILS")
+if not MONGO_DETAILS:
+    raise RuntimeError("MONGO_DETAILS 환경변수가 설정되지 않았습니다.")
 
-GARMENTS_DB: List[dict] = []
-#인메모리 방식이라 추후 삭제
-in_memory_db = {
-    "garments": {},
-    "users": {}
-}
+client = MongoClient(MONGO_DETAILS, server_api=ServerApi("1"))
+db = client["fashion_db"]
+garments_collection = db["garments"]
+users_collection = db["users"]
 
-# 추후 DB 적용 시 주석풀거임
-# from motor.motor_asyncio import AsyncIOMotorClient
-# MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
-# mongo_client = None
-# mongo_db = None
+pipe: Optional[FashionPipeline] = None
 
+# 비밀번호는 평문 저장하지 않고 Argon2 기반 해시로 저장/검증
+password_hash = PasswordHash.recommended()
 
 
 # ---------------------------------------------------------
-# 수명 주기 관리 (Lifespan: 1회 로드 & 워밍업)
+# 수명 주기 관리 (Lifespan: 1회 로드 & 워밍업 & DB 점검)
 # ---------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global pipe
     print("=" * 50)
-    print("🚀 Fashion AI Pipeline 초기화 중 (인메모리 모드)...")
+    print("🚀 Fashion AI Pipeline 초기화 중 (MongoDB 모드)...")
 
     # FashionPipeline 싱글톤 로딩 및 워밍업
     pipe = FashionPipeline(detector_weights=MODEL_PATH)
-    pipe.warmup()  #[cite: 1]
+    pipe.warmup()
     print(f"🎯 AI Model Loaded: {MODEL_PATH}")
-    print(f"🏷️ Categories: {pipe.categories}")  #[cite: 1]
+    print(f"🏷️ Categories: {pipe.categories}")
+
+    # MongoDB 연결 상태 테스트
+    try:
+        client.admin.command("ping")
+        users_collection.create_index("user_id", unique=True)
+        garments_collection.create_index([("user_id", 1), ("garment_id", 1)])
+        print("✅ MongoDB Atlas 성공적으로 연결되었습니다!")
+    except Exception as e:
+        print(f"❌ MongoDB 연결 실패: {e}")
+
     print("=" * 50)
 
     yield
@@ -71,8 +84,8 @@ async def lifespan(app: FastAPI):
 # FastAPI 앱 인스턴스
 # ---------------------------------------------------------
 app = FastAPI(
-    title="Fashion Recommendation API (In-Memory)",
-    description="Vision Mamba/YOLO 검출 및 FashionSigLIP 기반 임베딩 추천",
+    title="Fashion Recommendation API (MongoDB Atlas)",
+    description="Vision Mamba/YOLO 검출 및 FashionSigLIP 기반 임베딩 추천 (MongoDB 영구 저장)",
     version="2.0.0",
     lifespan=lifespan,
 )
@@ -134,6 +147,15 @@ class RecommendResponse(BaseModel):
     total_results: int
     results: List[RecommendResultItem]
 
+class UserRegisterRequest(BaseModel):
+    user_id: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=8, max_length=128)
+
+
+class GarmentDeleteRequest(BaseModel):
+    user_id: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=8, max_length=128)
+
 
 # ---------------------------------------------------------
 # 라우트
@@ -141,28 +163,52 @@ class RecommendResponse(BaseModel):
 
 @app.get("/", summary="루트 헬스체크")
 def root():
-    return {"status": "online", "mode": "in-memory (no MongoDB)"}
+    return {"status": "online", "mode": "MongoDB Cloud Persistent Storage"}
 
 
 @app.get("/health", summary="시스템 상태 상세 확인")
 def health():
+    total_count = garments_collection.count_documents({})
     return {
         "status": "ok",
         "model_loaded": pipe is not None and getattr(pipe, "_detector", None) is not None,
         "device": str(pipe.device) if pipe else "unknown",
         "categories": pipe.categories if pipe else [],
         "thumbnails_dir": str(THUMBNAIL_DIR),
-        "total_saved_garments": len(GARMENTS_DB),
+        "total_mongodb_garments": total_count,
+    }
+
+@app.post("/users", status_code=201, summary="사용자 등록")
+def register_user(req: UserRegisterRequest):
+    existing_user = users_collection.find_one({"user_id": req.user_id})
+
+    if existing_user:
+        raise HTTPException(
+            status_code=409,
+            detail="이미 존재하는 사용자입니다."
+        )
+
+    hashed_password = password_hash.hash(req.password)
+
+    users_collection.insert_one({
+        "user_id": req.user_id,
+        "password_hash": hashed_password,
+        "created_at": datetime.utcnow().isoformat()
+    })
+
+    return {
+        "message": "사용자 등록 완료",
+        "user_id": req.user_id
     }
 
 
 # ==========================================
-# 3. 주요 비즈니스 라우트 (옷 등록, 분석, 추천, 조회)
+# 주요 비즈니스 라우트 (옷 등록, 분석, 추천, 조회)
 # ==========================================
 
 @app.post(
     "/garments",
-    summary="옷 등록 (대표 박스 추출 + 임베딩 메모리 저장 + 썸네일 생성)",
+    summary="옷 등록 (대표 박스 추출 + MongoDB 임베딩 저장 + 썸네일 생성)",
     response_model=RegisterGarmentsResponse,
 )
 async def register_garments(
@@ -176,8 +222,15 @@ async def register_garments(
     if not image_bytes:
         raise HTTPException(status_code=400, detail="업로드된 파일이 비어 있습니다.")
 
-    # dedup=True로 대표 박스 1개만 추출
-    items: List[Garment] = pipe.analyze(image_bytes, dedup=True)
+    try:
+        # dedup=True로 대표 박스 1개만 추출
+        items: List[Garment] = pipe.analyze(image_bytes, dedup=True)
+    except Exception as e:
+        print(f"❌ [AI Pipeline Error]: {e}")
+        raise HTTPException(status_code=500, detail=f"의류 검출 모델 처리 중 오류 발생: {str(e)}")
+
+    if not items:
+        raise HTTPException(status_code=400, detail="이미지에서 감지된 의류가 없습니다. 다른 이미지로 시도해 주세요.")
 
     saved_items = []
     for g in items:
@@ -186,26 +239,36 @@ async def register_garments(
         thumb_filepath = os.path.join(THUMBNAIL_DIR, thumb_filename)
 
         # 썸네일 이미지 로컬 저장
-        g.crop.save(thumb_filepath, format="JPEG", quality=92)
+        try:
+            g.crop.save(thumb_filepath, format="JPEG", quality=92)
+        except Exception as e:
+            print(f"❌ [Thumbnail Save Error]: {e}")
+            raise HTTPException(status_code=500, detail="썸네일 이미지 저장에 실패했습니다.")
+
         thumb_url = f"/thumbnails/{thumb_filename}"
 
-        # 인메모리 리스트에 적재
+        # MongoDB 저장 문서 객체
         doc = {
             "garment_id": gid,
             "user_id": user_id,
             "category": g.category,
-            "bbox": [round(v, 4) for v in g.bbox],
-            "conf": round(g.conf, 4),
-            "area_ratio": round(g.area_ratio, 4),
+            "bbox": [round(float(v), 4) for v in g.bbox],
+            "conf": round(float(g.conf), 4),
+            "area_ratio": round(float(g.area_ratio), 4),
             "embedding": g.embedding.tolist(),
             "thumbnail_url": thumb_url,
             "created_at": datetime.utcnow().isoformat(),
         }
-        GARMENTS_DB.append(doc)
 
-        # [추후 MongoDB 적용 시 사용할 코드]
-        # if mongo_db is not None:
-        #     await mongo_db.garments.insert_one(doc.copy())
+        # ✅ MongoDB Atlas 저장 예외 처리
+        try:
+            garments_collection.insert_one(doc.copy())
+        except Exception as e:
+            print(f"❌ [MongoDB Insert Error]: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail="MongoDB Atlas 저장 중 오류가 발생했습니다. IP Whitelist(0.0.0.0/0) 및 URI 설정을 확인하세요."
+            )
 
         saved_items.append(
             GarmentItemResponse(
@@ -219,7 +282,7 @@ async def register_garments(
         )
 
     return RegisterGarmentsResponse(
-        message="옷 등록 및 임베딩 저장이 완료되었습니다.",
+        message="옷 등록 및 MongoDB 임베딩 저장이 완료되었습니다.",
         user_id=user_id,
         registered_items=saved_items,
     )
@@ -231,7 +294,6 @@ async def analyze_outfit(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="이미지 파일만 업로드 가능합니다.")
 
     image_bytes = await file.read()
-    # 착용샷 분석은 dedup=False
     items: List[Garment] = pipe.analyze(image_bytes, dedup=False)
 
     return AnalyzeResponse(
@@ -240,15 +302,10 @@ async def analyze_outfit(file: UploadFile = File(...)):
     )
 
 
-@app.post("/recommend", summary="코디 추천 (임베딩 유사도 랭킹)", response_model=RecommendResponse)
+@app.post("/recommend", summary="코디 추천 (MongoDB 임베딩 유사도 랭킹)", response_model=RecommendResponse)
 async def recommend_outfit(req: RecommendRequest):
-    # 인메모리에서 user_id에 해당하는 옷 목록 추출
-    rows = [r for r in GARMENTS_DB if r["user_id"] == req.user_id]
-
-    # [추후 MongoDB 적용 시 사용할 코드]
-    # if mongo_db is not None:
-    #     cursor = mongo_db.garments.find({"user_id": req.user_id})
-    #     rows = await cursor.to_list(length=1000)
+    # ✅ MongoDB에서 user_id에 해당하는 옷 데이터 전체 조회 (_id 제외)
+    rows = list(garments_collection.find({"user_id": req.user_id}, {"_id": 0}))
 
     if not rows:
         raise HTTPException(
@@ -291,16 +348,91 @@ def get_user_garments(
         user_id: str = Query(..., description="사용자 ID"),
         category: Optional[str] = Query(None, description="특정 카테고리 필터"),
 ):
-    user_rows = [r for r in GARMENTS_DB if r["user_id"] == user_id]
+    query = {"user_id": user_id}
     if category:
-        user_rows = [r for r in user_rows if r["category"] == category]
+        query["category"] = category
 
-    items = [{k: v for k, v in r.items() if k != "embedding"} for r in user_rows]
-    return {"user_id": user_id, "count": len(items), "items": items}
+    # ✅ MongoDB에서 데이터 조회 (JSON 직렬화를 위해 _id 및 embedding 제외)
+    user_rows = list(garments_collection.find(query, {"_id": 0, "embedding": 0}))
+
+    return {"user_id": user_id, "count": len(user_rows), "items": user_rows}
+
+
+@app.delete("/garments/{garment_id}", summary="비밀번호 확인 후 등록 의류 삭제")
+def delete_garment(garment_id: str, req: GarmentDeleteRequest):
+    # 1) 사용자 확인
+    user = users_collection.find_one({"user_id": req.user_id})
+
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="사용자 ID 또는 비밀번호가 올바르지 않습니다."
+        )
+
+    # 2) 비밀번호 검증
+    try:
+        valid_password = password_hash.verify(
+            req.password,
+            user["password_hash"]
+        )
+    except Exception:
+        valid_password = False
+
+    if not valid_password:
+        raise HTTPException(
+            status_code=401,
+            detail="사용자 ID 또는 비밀번호가 올바르지 않습니다."
+        )
+
+    # 3) 해당 사용자의 옷인지 확인
+    garment = garments_collection.find_one({
+        "garment_id": garment_id,
+        "user_id": req.user_id
+    })
+
+    if not garment:
+        raise HTTPException(
+            status_code=404,
+            detail="해당 의류를 찾을 수 없습니다."
+        )
+
+    # 4) MongoDB 문서 삭제
+    result = garments_collection.delete_one({
+        "garment_id": garment_id,
+        "user_id": req.user_id
+    })
+
+    if result.deleted_count != 1:
+        raise HTTPException(
+            status_code=500,
+            detail="의류 데이터 삭제에 실패했습니다."
+        )
+
+    # 5) 저장된 썸네일 파일도 함께 삭제
+    thumbnail_url = garment.get("thumbnail_url")
+    thumbnail_deleted = False
+
+    if thumbnail_url:
+        thumbnail_name = os.path.basename(thumbnail_url)
+        thumbnail_path = Path(THUMBNAIL_DIR) / thumbnail_name
+
+        try:
+            if thumbnail_path.exists():
+                thumbnail_path.unlink()
+                thumbnail_deleted = True
+        except OSError as e:
+            # DB 삭제 자체는 완료됐으므로 파일 삭제 실패는 로그만 남김
+            print(f"⚠️ [Thumbnail Delete Error] {thumbnail_path}: {e}")
+
+    return {
+        "message": "옷이 삭제되었습니다.",
+        "garment_id": garment_id,
+        "thumbnail_deleted": thumbnail_deleted
+    }
+
 
 # ---------------------------------------------------------
-## ---------------------------------------------------------
-# 테스트 UI (/ui) - 시각화 렌더링 개선
+# 테스트 UI (/ui)
 # ---------------------------------------------------------
 @app.get("/ui", summary="테스트용 UI", response_class=HTMLResponse)
 def test_ui():
@@ -310,7 +442,7 @@ def test_ui():
 <html lang="ko">
 <head>
   <meta charset="utf-8"/>
-  <title>Fashion AI Pipeline Test (In-Memory)</title>
+  <title>Fashion AI Pipeline Test (MongoDB Atlas)</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 800px; margin: 30px auto; padding: 20px; background: #f9fafb; color: #333; }
     h2 { text-align: center; margin-bottom: 25px; }
@@ -319,8 +451,6 @@ def test_ui():
     input { border: 1px solid #d1d5db; }
     button { background: #2563eb; color: white; border: none; font-weight: bold; cursor: pointer; transition: 0.2s; }
     button:hover { background: #1d4ed8; }
-    
-    /* 썸네일 카드 갤러리 스타일 */
     .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 15px; margin-top: 15px; }
     .item-card { background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.04); }
     .item-card img { width: 100%; height: 160px; object-fit: contain; background: #f3f4f6; border-radius: 6px; margin-bottom: 8px; border: 1px solid #eee; }
@@ -331,7 +461,7 @@ def test_ui():
   </style>
 </head>
 <body>
-  <h2>👗 Fashion AI 추천 & 시각화 테스트</h2>
+  <h2>👗 Fashion AI 추천 & 시각화 테스트 (MongoDB Atlas)</h2>
   
   <div class="box">
     <h3>1. 옷 등록 (POST /garments)</h3>
@@ -351,7 +481,6 @@ def test_ui():
     <button onclick="getGarments()" style="background:#4b5563;">옷장 불러오기</button>
   </div>
 
-  <!-- 추천/조회 결과 이미지 갤러리 영역 -->
   <div class="box">
     <h3 id="galleryTitle">🖼️ 결과 이미지 뷰어</h3>
     <div id="galleryContainer" class="card-grid">
@@ -367,7 +496,6 @@ def test_ui():
   <script>
     const log = (msg) => document.getElementById("output").textContent = JSON.stringify(msg, null, 2);
 
-    // 1. 옷 등록
     async function registerGarment() {
       const file = document.getElementById("garmentFile").files[0];
       const uid = document.getElementById("userId").value;
@@ -394,7 +522,6 @@ def test_ui():
       }
     }
 
-    // 2. 코디 추천 (순위 및 크롭 이미지 렌더링)
     async function getRecommendation() {
       const uid = document.getElementById("userId").value;
       const q = document.getElementById("recQuery").value;
@@ -423,7 +550,6 @@ def test_ui():
       }
     }
 
-    // 3. 내 옷장 목록 조회
     async function getGarments() {
       const uid = document.getElementById("userId").value;
       const res = await fetch(`/garments?user_id=${uid}`);

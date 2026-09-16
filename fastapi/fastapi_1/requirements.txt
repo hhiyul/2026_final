@@ -11,3 +11,6 @@ huggingface_hub
 ultralytics
 transformers
 opencv-python-headless
+pymongo[srv]
+dnspython
+pwdlib[argon2]
