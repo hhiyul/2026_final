@@ -1,16 +1,35 @@
-# React + Vite
+# wearly 프런트엔드
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+기존 Fashion AI API를 사용하는 React/Vite 옷장 UI입니다.
 
-Currently, two official plugins are available:
+## 실행
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```sh
+npm ci
+# .env.local에 기존 게이트웨이 주소 설정: VITE_API_BASE_URL=http://localhost:8080
+npm run dev
+```
 
-## React Compiler
+사용자 ID를 입력하고 **옷장 불러오기**를 누릅니다. 사용자 등록, 사진 등록, 추천 요청, 상세 이미지 탐색, 비밀번호 확인 삭제를 지원합니다. 사용자 ID는 로그인 세션이 아닌 기존 API의 옷장 조회 키입니다.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## 표시 규칙
 
-## Expanding the ESLint configuration
+- 옷장과 추천 결과 모두 아우터 → 상의 → 하의 → 모자 순으로 묶습니다.
+- 그 외 라벨과 미분류 항목도 별도 그룹으로 표시합니다.
+- 옷장은 그룹 안에서 최신 등록순, 추천 결과는 서버 추천 순위순으로 표시합니다.
+- 추천은 기존과 동일하게 `top_k: 5`를 요청합니다. 라벨 필터는 이미 받은 결과를 필터링하며 라벨당 5개를 추가 요청하지 않습니다.
+- 사용자 ID 변경 시 이전 사용자 목록과 추천 결과를 비웁니다.
+- API 응답 JSON은 하단의 접힌 영역에서 확인할 수 있습니다.
+- 업로드 후 조회 실패 시 저장 성공과 조회 실패를 구분하여 안내합니다.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## 검증
+
+```sh
+npm test
+npm run lint
+npm run build
+```
+
+`npm test`는 라벨 순서, 미분류 및 새 라벨 보존, 추천 순위, 등록일 정렬, 필터, 원본 배열 보존, FastAPI 검증 오류 메시지를 검증합니다. 실제 서버 연동은 실행 중인 게이트웨이와 FastAPI/MongoDB 환경에서 확인해야 합니다.
+
+Docker Compose는 이 디렉터리를 빌드합니다. 빌드 시 `VITE_API_BASE_URL`을 전달하는 기존 방식을 유지합니다. 환경 변수를 생략하면 API와 이미지는 현재 웹사이트의 origin을 사용하므로 동일 origin에서 API를 제공하는 구성이 필요합니다.
