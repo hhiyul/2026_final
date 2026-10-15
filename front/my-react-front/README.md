@@ -1,26 +1,54 @@
 # wearly 프런트엔드
 
-기존 Fashion AI API를 사용하는 React/Vite 옷장 UI입니다.
+React/Vite 기반 회원 전용 옷장 UI입니다. `front`는 프런트, `fastapi`는 인증 및 AI 백엔드, `scg`는 게이트웨이입니다.
 
 ## 실행
 
 ```sh
 npm ci
-# .env.local에 기존 게이트웨이 주소 설정: VITE_API_BASE_URL=http://localhost:8080
 npm run dev
+# 기본 개발 프록시: localhost:5173 → localhost:8080 (SCG)
+# 다른 주소라면 .env.local에 VITE_API_PROXY_TARGET 지정
+# 다른 주소를 쓸 때는 .env.local에 VITE_API_PROXY_TARGET 설정
 ```
 
-사용자 ID를 입력하고 **옷장 불러오기**를 누릅니다. 사용자 등록, 사진 등록, 추천 요청, 상세 이미지 탐색, 비밀번호 확인 삭제를 지원합니다. 사용자 ID는 로그인 세션이 아닌 기존 API의 옷장 조회 키입니다.
+회원가입 후 로그인하면 본인의 옷장을 자동으로 불러옵니다. 기존에 등록한 계정과 비밀번호도 그대로 사용할 수 있습니다. 사용자 ID를 임의 입력해서 다른 옷장을 여는 기능은 제거했습니다.
 
-## 표시 규칙
+## 화면
 
-- 옷장과 추천 결과 모두 아우터 → 상의 → 하의 → 모자 순으로 묶습니다.
-- 그 외 라벨과 미분류 항목도 별도 그룹으로 표시합니다.
-- 옷장은 그룹 안에서 최신 등록순, 추천 결과는 서버 추천 순위순으로 표시합니다.
-- 추천은 기존과 동일하게 `top_k: 5`를 요청합니다. 라벨 필터는 이미 받은 결과를 필터링하며 라벨당 5개를 추가 요청하지 않습니다.
-- 사용자 ID 변경 시 이전 사용자 목록과 추천 결과를 비웁니다.
-- API 응답 JSON은 하단의 접힌 영역에서 확인할 수 있습니다.
-- 업로드 후 조회 실패 시 저장 성공과 조회 실패를 구분하여 안내합니다.
+- 내 옷장 / AI 추천, 라벨별 그룹과 필터, 사진 업로드·미리보기, 상세 이전/다음, 비밀번호 확인 삭제
+- 아우터 → 상의 → 하의 → 모자 순서. 새로운 라벨·미분류도 보존
+- 그룹 안에서 옷장은 최신 등록순, 추천 결과는 서버 추천 순위순
+- AI 추천 예시 버튼은 **쿨톤 / 웜톤**만 제공. 직접 입력도 가능하며 기존 `top_k: 5` 유지
+- 옷 추가하기: 대비가 높은 큰 노란 버튼. 모바일에서는 화면 하단 고정
+- 다크모드: 최초 시스템 설정 적용, 이후 사용자가 고른 테마 저장. 로그인 화면·상세·삭제 모달 포함
+- API 응답 JSON은 하단 접힌 영역에서 확인
+
+## 인증 및 배포 설정
+
+쿠키는 `HttpOnly`, `SameSite=Lax`이며 브라우저에 인증 토큰을 직접 저장하지 않습니다. Axios의 `withCredentials: true`로 로그인 쿠키를 전송하고 앱을 열 때 `/auth/me`로 확인합니다. 세션 만료 시 로그인 화면으로 돌아갑니다.
+
+Docker Compose는 이 디렉터리를 빌드합니다. 기본 설정은 별도 API URL 없이 같은 호스트에서 동작합니다. 로컬 Vite는 요청을 `localhost:8080` 게이트웨이에 전달하고, Docker Nginx는 게이트웨이에 요청을 프록시합니다. 브라우저와 API 주소를 같은 origin으로 유지하여 인증 쿠키와 보호된 옷 썸네일이 함께 동작합니다.
+
+로컬 HTTP 기준:
+
+```dotenv
+SESSION_COOKIE_SECURE=false
+# 필요할 때만 브라우저가 접근 가능한 API origin을 지정
+# VITE_API_BASE_URL=http://localhost:8080
+```
+
+다른 컴퓨터/서버에서는 `localhost` 대신 **브라우저에서 접근 가능한 같은 호스트명**을 사용하고, 루트 `.env`의 `FRONTEND_ORIGINS`에 프런트 주소(origin)를 쉼표로 구분해 지정하세요. 이 값은 SCG와 FastAPI 양쪽에 전달됩니다. `localhost`와 `127.0.0.1`을 섞지 마세요. 서로 다른 사이트의 도메인을 사용하는 배포는 기본 쿠키 정책에서 지원하지 않습니다. 같은 호스트의 게이트웨이를 통해 서비스하세요.
+
+HTTPS 배포에서는 `SESSION_COOKIE_SECURE=true`를 사용하세요. `VITE_API_BASE_URL` 기본값은 비워 둡니다. 브라우저는 프런트 origin에 요청하고 Vite 개발 프록시 또는 Docker Nginx가 SCG로 전달합니다. Nginx는 Docker DNS를 이용해 SCG를 실행 시점에 찾으므로 컨테이너 시작 순서에 의존하지 않습니다. 로컬에서 Vite와 SCG가 다른 origin일 경우 실제 프런트 origin을 `FRONTEND_ORIGINS`에 포함해야 합니다.
+
+프런트와 백엔드, SCG를 함께 적용해야 합니다:
+
+```sh
+# 저장소 루트
+# API_KEY, MONGO_DETAILS, HF_TOKEN 등 기존 환경변수는 그대로 사용
+ docker compose up -d --build
+```
 
 ## 검증
 
@@ -30,6 +58,4 @@ npm run lint
 npm run build
 ```
 
-`npm test`는 라벨 순서, 미분류 및 새 라벨 보존, 추천 순위, 등록일 정렬, 필터, 원본 배열 보존, FastAPI 검증 오류 메시지를 검증합니다. 실제 서버 연동은 실행 중인 게이트웨이와 FastAPI/MongoDB 환경에서 확인해야 합니다.
-
-Docker Compose는 이 디렉터리를 빌드합니다. 빌드 시 `VITE_API_BASE_URL`을 전달하는 기존 방식을 유지합니다. 환경 변수를 생략하면 API와 이미지는 현재 웹사이트의 origin을 사용하므로 동일 origin에서 API를 제공하는 구성이 필요합니다.
+백엔드 인증 테스트와 배포 설명: `fastapi/fastapi_1/AUTH.md`.

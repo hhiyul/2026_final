@@ -8,13 +8,10 @@ spring:
         - DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials, RETAIN_FIRST
 
       globalcors:
+        add-to-simple-url-handler-mapping: true
         cors-configurations:
           '[/**]':
-            allowedOrigins:
-              - "http://localhost"
-              - "http://localhost:80"
-              - "http://localhost:3000"
-              - "http://127.0.0.1:3000"
+            allowedOrigins: ${FRONTEND_ORIGINS:http://localhost,http://localhost:80,http://localhost:3000,http://localhost:5173,http://localhost:8080,http://127.0.0.1,http://127.0.0.1:3000,http://127.0.0.1:5173,http://127.0.0.1:8080}
             allowedMethods:
               - "GET"
               - "POST"
@@ -28,7 +25,7 @@ spring:
         - id: fastapi-node-1-route
           uri: http://fastapi-node-1:8000
           predicates:
-            - Path=/garments/**, /recommend, /analyze, /health, /ui, /users
+            - Path=/garments, /garments/**, /recommend, /analyze, /health, /ui, /users, /auth/**
             - Weight=ai-group, 5
           filters:
             - AddRequestHeader=X-API-Key, ${API_KEY:default-key}
@@ -37,7 +34,7 @@ spring:
         - id: fastapi-node-2-route
           uri: http://fastapi-node-2:8000
           predicates:
-            - Path=/garments/**, /recommend, /analyze, /health, /ui, /users
+            - Path=/garments, /garments/**, /recommend, /analyze, /health, /ui, /users, /auth/**
             - Weight=ai-group, 5
           filters:
             - AddRequestHeader=X-API-Key, ${API_KEY:default-key}

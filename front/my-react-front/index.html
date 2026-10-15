@@ -9,6 +9,19 @@
       name="description"
       content="내 옷장을 라벨별로 정리하고 원하는 스타일에 어울리는 옷을 추천받으세요."
     />
+    <script>
+      try {
+        const saved = localStorage.getItem("wearly-theme");
+        document.documentElement.dataset.theme =
+          saved === "dark" || saved === "light"
+            ? saved
+            : matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light";
+      } catch {
+        document.documentElement.dataset.theme = "light";
+      }
+    </script>
     <title>wearly | 나의 스마트 옷장</title>
   </head>
   <body>
