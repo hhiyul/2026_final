@@ -6,8 +6,10 @@ React/Vite 기반 회원 전용 옷장 UI입니다. `front`는 프런트, `fasta
 
 ```sh
 npm ci
-# .env.local: VITE_API_BASE_URL=http://localhost:8080
 npm run dev
+# 기본 개발 프록시: localhost:5173 → localhost:8080 (SCG)
+# 다른 주소라면 .env.local에 VITE_API_PROXY_TARGET 지정
+# 다른 주소를 쓸 때는 .env.local에 VITE_API_PROXY_TARGET 설정
 ```
 
 회원가입 후 로그인하면 본인의 옷장을 자동으로 불러옵니다. 기존에 등록한 계정과 비밀번호도 그대로 사용할 수 있습니다. 사용자 ID를 임의 입력해서 다른 옷장을 여는 기능은 제거했습니다.
@@ -26,16 +28,19 @@ npm run dev
 
 쿠키는 `HttpOnly`, `SameSite=Lax`이며 브라우저에 인증 토큰을 직접 저장하지 않습니다. Axios의 `withCredentials: true`로 로그인 쿠키를 전송하고 앱을 열 때 `/auth/me`로 확인합니다. 세션 만료 시 로그인 화면으로 돌아갑니다.
 
-Docker Compose는 이 디렉터리를 빌드합니다. 로컬 기준:
+Docker Compose는 이 디렉터리를 빌드합니다. 기본 설정은 별도 API URL 없이 같은 호스트에서 동작합니다. 로컬 Vite는 요청을 `localhost:8080` 게이트웨이에 전달하고, Docker Nginx는 게이트웨이에 요청을 프록시합니다. 브라우저와 API 주소를 같은 origin으로 유지하여 인증 쿠키와 보호된 옷 썸네일이 함께 동작합니다.
+
+로컬 HTTP 기준:
 
 ```dotenv
-VITE_API_BASE_URL=http://localhost:8080
 SESSION_COOKIE_SECURE=false
+# 필요할 때만 브라우저가 접근 가능한 API origin을 지정
+# VITE_API_BASE_URL=http://localhost:8080
 ```
 
 다른 컴퓨터/서버에서는 `localhost` 대신 **브라우저에서 접근 가능한 같은 호스트명**을 사용하고, 루트 `.env`의 `FRONTEND_ORIGINS`에 프런트 주소(origin)를 쉼표로 구분해 지정하세요. 이 값은 SCG와 FastAPI 양쪽에 전달됩니다. `localhost`와 `127.0.0.1`을 섞지 마세요. 서로 다른 사이트의 도메인을 사용하는 배포는 기본 쿠키 정책에서 지원하지 않습니다. 같은 호스트의 게이트웨이를 통해 서비스하세요.
 
-HTTPS 배포에서는 `SESSION_COOKIE_SECURE=true`를 사용하세요. `VITE_API_BASE_URL`을 생략하면 현재 origin을 사용하므로 SCG의 `:8080` 등 API와 프런트가 함께 제공되는 주소로 접속해야 합니다. 프런트 Nginx의 `:80`만 직접 사용하는 경우에는 API 주소를 지정해야 합니다.
+HTTPS 배포에서는 `SESSION_COOKIE_SECURE=true`를 사용하세요. `VITE_API_BASE_URL` 기본값은 비워 둡니다. 브라우저는 프런트 origin에 요청하고 Vite 개발 프록시 또는 Docker Nginx가 SCG로 전달합니다. Nginx는 Docker DNS를 이용해 SCG를 실행 시점에 찾으므로 컨테이너 시작 순서에 의존하지 않습니다. 로컬에서 Vite와 SCG가 다른 origin일 경우 실제 프런트 origin을 `FRONTEND_ORIGINS`에 포함해야 합니다.
 
 프런트와 백엔드, SCG를 함께 적용해야 합니다:
 

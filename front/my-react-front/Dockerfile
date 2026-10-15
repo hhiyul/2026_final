@@ -4,28 +4,22 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 
-# 패키지 파일 복사 및 설치
 COPY package.json package-lock.json* ./
 RUN npm install
-
-# 전체 소스코드 복사
 COPY . .
 
-# .env에 주소 통잏ㅎ시킴
 ARG VITE_API_BASE_URL
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
-
-# Vite 프로덕션 빌드
 RUN npm run build
 
 # ==========================================
 # 2단계: Nginx 서빙
 # ==========================================
 FROM nginx:alpine
-
-# Vite 결과물(dist) 복사
 COPY --from=builder /app/dist /usr/share/nginx/html
+# API calls and protected thumbnails share the frontend's public origin.
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY proxy_params /etc/nginx/proxy_params
 
 EXPOSE 80
-
 CMD ["nginx", "-g", "daemon off;"]

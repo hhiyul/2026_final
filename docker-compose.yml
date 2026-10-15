@@ -23,7 +23,7 @@ services:
       context: ./front/my-react-front
       dockerfile: Dockerfile
       args:
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
     container_name: react-container
     ports:
       - "80:80"
