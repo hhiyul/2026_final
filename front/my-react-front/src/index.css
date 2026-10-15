@@ -1,4 +1,50 @@
 :root {
+  color-scheme: light;
+  --page: #f8f9f6;
+  --surface: #ffffff;
+  --text: #26332d;
+  --muted: #65725f;
+  --border: #dce2d5;
+  --soft: #edf1e6;
+  --accent: #395a3e;
+  --accent-hover: #29472e;
+  --on-accent: #ffffff;
+  --accent-text: #46643c;
+  --accent-soft: #dfe8d6;
+  --focus: #789458;
+  --success-bg: #e7f1e0;
+  --success-text: #335431;
+  --error-bg: #fff0ec;
+  --error-text: #983e30;
+  --overlay-surface: #fffffff0;
+  --upload-bg: #f4be50;
+  --upload-hover: #e9aa2d;
+  --upload-text: #29200c;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #111713;
+  --surface: #1a231d;
+  --text: #eef3e9;
+  --muted: #b0beaa;
+  --border: #3a483b;
+  --soft: #253125;
+  --accent: #afcf96;
+  --accent-hover: #c2dfa8;
+  --on-accent: #17230f;
+  --accent-text: #bfdaa7;
+  --accent-soft: #36492c;
+  --focus: #c3de9f;
+  --success-bg: #263e26;
+  --success-text: #c2e4ae;
+  --error-bg: #442724;
+  --error-text: #ffc2b4;
+  --overlay-surface: #243025f2;
+  --upload-bg: #f5c45c;
+  --upload-hover: #ffda80;
+  --upload-text: #28200d;
+}
+:root {
   font-family:
     Inter,
     "Noto Sans KR",
@@ -6,15 +52,14 @@
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
-  color: #26332d;
-  background: #f8f9f6;
+  color: var(--text);
+  background: var(--page);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   font-weight: 400;
   font-size: 14px;
   line-height: 1.6;
-  color-scheme: light;
 }
 * {
   box-sizing: border-box;
@@ -41,20 +86,20 @@ button:disabled {
 button:focus-visible,
 a:focus-visible,
 summary:focus-visible {
-  outline: 3px solid #789458;
+  outline: 3px solid var(--focus);
   outline-offset: 4px;
 }
 input {
   width: 100%;
-  border: 1px solid #d5dcd0;
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: #fff;
+  background: var(--surface);
   padding: 12px 14px;
-  color: #26332d;
+  color: var(--text);
   min-width: 0;
 }
 input:focus {
-  outline: 2px solid #789458;
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 label {
@@ -83,5 +128,5 @@ input {
   min-height: 44px;
 }
 ::selection {
-  background: #dce8ce;
+  background: var(--accent-soft);
 }

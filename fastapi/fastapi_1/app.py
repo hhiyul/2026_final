@@ -10,12 +10,11 @@ from typing import List, Optional
 import numpy as np
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
-from pwdlib import PasswordHash
+from auth import AuthService, ALLOWED_ORIGINS
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import FastAPI, File, Depends, HTTPException, Query, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------
@@ -46,7 +45,7 @@ users_collection = db["users"]
 pipe: Optional[FashionPipeline] = None
 
 # 비밀번호는 평문 저장하지 않고 Argon2 기반 해시로 저장/검증
-password_hash = PasswordHash.recommended()
+auth = AuthService(users_collection, db["sessions"], garments_collection)
 
 
 # ---------------------------------------------------------
@@ -67,11 +66,12 @@ async def lifespan(app: FastAPI):
     # MongoDB 연결 상태 테스트
     try:
         client.admin.command("ping")
-        users_collection.create_index("user_id", unique=True)
+        auth.create_indexes()
         garments_collection.create_index([("user_id", 1), ("garment_id", 1)])
         print("✅ MongoDB Atlas 성공적으로 연결되었습니다!")
     except Exception as e:
         print(f"❌ MongoDB 연결 실패: {e}")
+        raise  # 인증 인덱스 생성에 실패하면 요청을 받지 않습니다.
 
     print("=" * 50)
 
@@ -92,14 +92,35 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 크롭 썸네일 서빙용 정적 폴더 마운트
-app.mount("/thumbnails", StaticFiles(directory=THUMBNAIL_DIR), name="thumbnails")
+app.include_router(auth.router)
+
+
+@app.middleware("http")
+async def protect_session_requests(request: Request, call_next):
+    # Reject cross-origin cookie mutations, including login/logout CSRF.
+    origin = request.headers.get("origin")
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and origin and origin not in ALLOWED_ORIGINS:
+        return JSONResponse({"detail": "허용되지 않은 요청 출처입니다."}, status_code=403)
+    response = await call_next(request)
+    if request.url.path.startswith(("/auth", "/users", "/garments", "/recommend", "/thumbnails")):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/thumbnails/{filename}")
+def get_thumbnail(filename: str, user_id: str = Depends(auth.current_user)):
+    if Path(filename).name != filename or not garments_collection.find_one({"user_id": user_id, "thumbnail_url": f"/thumbnails/{filename}"}):
+        raise HTTPException(404, "이미지를 찾을 수 없습니다.")
+    path = Path(THUMBNAIL_DIR) / filename
+    if not path.is_file():
+        raise HTTPException(404, "이미지를 찾을 수 없습니다.")
+    return FileResponse(path, headers={"Cache-Control": "no-store"})
 
 
 # ---------------------------------------------------------
@@ -126,8 +147,7 @@ class AnalyzeResponse(BaseModel):
 
 
 class RecommendRequest(BaseModel):
-    user_id: str = Field(..., description="사용자 식별 고유 ID")
-    query: str = Field(..., description="자연어 추천 쿼리 (예: '쿨톤 스트릿하게')")
+    query: str = Field(..., description="자연어 추천 쿼리 (예: '쿨톤')")
     category: Optional[str] = Field(None, description="outerwear|top|bottom|headwear 필터")
     top_k: int = Field(5, ge=1, le=20, description="반환할 상위 결과 개수")
 
@@ -147,13 +167,7 @@ class RecommendResponse(BaseModel):
     total_results: int
     results: List[RecommendResultItem]
 
-class UserRegisterRequest(BaseModel):
-    user_id: str = Field(..., min_length=1, max_length=64)
-    password: str = Field(..., min_length=8, max_length=128)
-
-
 class GarmentDeleteRequest(BaseModel):
-    user_id: str = Field(..., min_length=1, max_length=64)
     password: str = Field(..., min_length=8, max_length=128)
 
 
@@ -178,30 +192,6 @@ def health():
         "total_mongodb_garments": total_count,
     }
 
-@app.post("/users", status_code=201, summary="사용자 등록")
-def register_user(req: UserRegisterRequest):
-    existing_user = users_collection.find_one({"user_id": req.user_id})
-
-    if existing_user:
-        raise HTTPException(
-            status_code=409,
-            detail="이미 존재하는 사용자입니다."
-        )
-
-    hashed_password = password_hash.hash(req.password)
-
-    users_collection.insert_one({
-        "user_id": req.user_id,
-        "password_hash": hashed_password,
-        "created_at": datetime.utcnow().isoformat()
-    })
-
-    return {
-        "message": "사용자 등록 완료",
-        "user_id": req.user_id
-    }
-
-
 # ==========================================
 # 주요 비즈니스 라우트 (옷 등록, 분석, 추천, 조회)
 # ==========================================
@@ -212,10 +202,10 @@ def register_user(req: UserRegisterRequest):
     response_model=RegisterGarmentsResponse,
 )
 async def register_garments(
-        user_id: str = Form(..., description="사용자 ID (비회원 UUID 또는 회원 ID)"),
+        user_id: str = Depends(auth.current_user),
         file: UploadFile = File(...),
 ):
-    if not file.content_type.startswith("image/"):
+    if not (file.content_type or "").startswith("image/"):
         raise HTTPException(status_code=400, detail="이미지 파일만 업로드 가능합니다.")
 
     image_bytes = await file.read()
@@ -289,8 +279,8 @@ async def register_garments(
 
 
 @app.post("/analyze", summary="착용샷 분석 (다중 검출, 저장 안 함)", response_model=AnalyzeResponse)
-async def analyze_outfit(file: UploadFile = File(...)):
-    if not file.content_type.startswith("image/"):
+async def analyze_outfit(file: UploadFile = File(...), user_id: str = Depends(auth.current_user)):
+    if not (file.content_type or "").startswith("image/"):
         raise HTTPException(status_code=400, detail="이미지 파일만 업로드 가능합니다.")
 
     image_bytes = await file.read()
@@ -303,14 +293,14 @@ async def analyze_outfit(file: UploadFile = File(...)):
 
 
 @app.post("/recommend", summary="코디 추천 (MongoDB 임베딩 유사도 랭킹)", response_model=RecommendResponse)
-async def recommend_outfit(req: RecommendRequest):
+async def recommend_outfit(req: RecommendRequest, user_id: str = Depends(auth.current_user)):
     # ✅ MongoDB에서 user_id에 해당하는 옷 데이터 전체 조회 (_id 제외)
-    rows = list(garments_collection.find({"user_id": req.user_id}, {"_id": 0}))
+    rows = list(garments_collection.find({"user_id": user_id}, {"_id": 0}))
 
     if not rows:
         raise HTTPException(
             status_code=404,
-            detail=f"해당 사용자({req.user_id})의 등록된 옷이 없습니다. 먼저 /garments 로 옷을 등록해 주세요.",
+            detail=f"해당 사용자({user_id})의 등록된 옷이 없습니다. 먼저 /garments 로 옷을 등록해 주세요.",
         )
 
     embs = np.array([r["embedding"] for r in rows], dtype=np.float32)
@@ -345,7 +335,7 @@ async def recommend_outfit(req: RecommendRequest):
 
 @app.get("/garments", summary="등록된 옷장 목록 조회")
 def get_user_garments(
-        user_id: str = Query(..., description="사용자 ID"),
+        user_id: str = Depends(auth.current_user),
         category: Optional[str] = Query(None, description="특정 카테고리 필터"),
 ):
     query = {"user_id": user_id}
@@ -359,35 +349,14 @@ def get_user_garments(
 
 
 @app.delete("/garments/{garment_id}", summary="비밀번호 확인 후 등록 의류 삭제")
-def delete_garment(garment_id: str, req: GarmentDeleteRequest):
-    # 1) 사용자 확인
-    user = users_collection.find_one({"user_id": req.user_id})
-
-    if not user:
-        raise HTTPException(
-            status_code=401,
-            detail="사용자 ID 또는 비밀번호가 올바르지 않습니다."
-        )
-
-    # 2) 비밀번호 검증
-    try:
-        valid_password = password_hash.verify(
-            req.password,
-            user["password_hash"]
-        )
-    except Exception:
-        valid_password = False
-
-    if not valid_password:
-        raise HTTPException(
-            status_code=401,
-            detail="사용자 ID 또는 비밀번호가 올바르지 않습니다."
-        )
+def delete_garment(garment_id: str, req: GarmentDeleteRequest, user_id: str = Depends(auth.current_user)):
+    if not auth.verify_password(user_id, req.password):
+        raise HTTPException(status_code=403, detail="비밀번호가 올바르지 않습니다.")
 
     # 3) 해당 사용자의 옷인지 확인
     garment = garments_collection.find_one({
         "garment_id": garment_id,
-        "user_id": req.user_id
+        "user_id": user_id
     })
 
     if not garment:
@@ -399,7 +368,7 @@ def delete_garment(garment_id: str, req: GarmentDeleteRequest):
     # 4) MongoDB 문서 삭제
     result = garments_collection.delete_one({
         "garment_id": garment_id,
-        "user_id": req.user_id
+        "user_id": user_id
     })
 
     if result.deleted_count != 1:
@@ -464,15 +433,23 @@ def test_ui():
   <h2>👗 Fashion AI 추천 & 시각화 테스트 (MongoDB Atlas)</h2>
   
   <div class="box">
+    <h3>로그인 / 회원가입</h3>
+    <input id="loginId" autocomplete="username" placeholder="아이디" />
+    <input id="loginPassword" type="password" autocomplete="current-password" placeholder="비밀번호 (8자 이상)" />
+    <button onclick="authenticate('/users')">회원가입</button>
+    <button onclick="authenticate('/auth/login')">로그인</button>
+    <button onclick="fetch('/auth/logout', {method:'POST'}).then(r=>r.json()).then(log)">로그아웃</button>
+  </div>
+  <div class="box">
     <h3>1. 옷 등록 (POST /garments)</h3>
-    <input id="userId" type="text" value="test_user" placeholder="User ID" />
+    <p>로그인한 사용자의 옷장을 사용합니다.</p>
     <input id="garmentFile" type="file" accept="image/*" />
     <button onclick="registerGarment()">옷 등록 및 임베딩 저장</button>
   </div>
 
   <div class="box">
     <h3>2. 코디 추천 (POST /recommend)</h3>
-    <input id="recQuery" type="text" value="쿨톤 스트릿하게" placeholder="추천 쿼리 입력" />
+    <input id="recQuery" type="text" value="쿨톤" placeholder="추천 쿼리 입력" />
     <button onclick="getRecommendation()">추천 요청</button>
   </div>
 
@@ -496,13 +473,17 @@ def test_ui():
   <script>
     const log = (msg) => document.getElementById("output").textContent = JSON.stringify(msg, null, 2);
 
+    async function authenticate(path) {
+      const res = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: document.getElementById('loginId').value.trim(), password: document.getElementById('loginPassword').value})});
+      log(await res.json());
+      document.getElementById('loginPassword').value = '';
+    }
+
     async function registerGarment() {
       const file = document.getElementById("garmentFile").files[0];
-      const uid = document.getElementById("userId").value;
       if (!file) return alert("이미지를 선택하세요");
 
       const fd = new FormData();
-      fd.append("user_id", uid);
       fd.append("file", file);
 
       const res = await fetch("/garments", { method: "POST", body: fd });
@@ -523,13 +504,12 @@ def test_ui():
     }
 
     async function getRecommendation() {
-      const uid = document.getElementById("userId").value;
       const q = document.getElementById("recQuery").value;
 
       const res = await fetch("/recommend", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: uid, query: q, top_k: 5 })
+        body: JSON.stringify({ query: q, top_k: 5 })
       });
       const data = await res.json();
       log(data);
@@ -551,13 +531,12 @@ def test_ui():
     }
 
     async function getGarments() {
-      const uid = document.getElementById("userId").value;
-      const res = await fetch(`/garments?user_id=${uid}`);
+      const res = await fetch("/garments");
       const data = await res.json();
       log(data);
 
       if (data.items && data.items.length > 0) {
-        document.getElementById("galleryTitle").textContent = `🧺 ${uid} 님의 옷장 (${data.count}벌)`;
+        document.getElementById("galleryTitle").textContent = `🧺 내 옷장 (${data.count}벌)`;
         const container = document.getElementById("galleryContainer");
         container.innerHTML = data.items.map(item => `
           <div class="item-card">

@@ -1,0 +1,9 @@
+# Lightweight route tests: no model/GPU downloads required.
+fastapi
+pymongo
+pwdlib[argon2]
+python-multipart
+numpy
+pytest
+httpx
+mongomock

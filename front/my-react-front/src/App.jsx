@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import axios from "axios";
+import { api, baseURL } from "./api";
 import {
   categories,
   categoryKey,
@@ -9,8 +9,6 @@ import {
 } from "./wardrobe";
 import "./App.css";
 
-const baseURL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
-const api = axios.create({ baseURL });
 const imageUrl = (url) =>
   !url
     ? ""
@@ -69,9 +67,7 @@ function Modal({ title, onClose, children, busy }) {
     </dialog>
   );
 }
-export default function App() {
-  const [userId, setUserId] = useState("test_user");
-  const [password, setPassword] = useState("");
+export default function WardrobeApp({ userId, themeControl, onLogout }) {
   const [tab, setTab] = useState("wardrobe");
   const [items, setItems] = useState([]);
   const [results, setResults] = useState([]);
@@ -80,7 +76,7 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [lastQuery, setLastQuery] = useState("");
   const [filter, setFilter] = useState("all");
-  const [busy, setBusy] = useState("");
+  const [busy, setBusy] = useState("load");
   const [notice, setNotice] = useState(null);
   const [json, setJson] = useState(null);
   const [modal, setModal] = useState(null);
@@ -89,7 +85,30 @@ export default function App() {
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState("");
   const fileInput = useRef(null);
-  const requestLock = useRef(false);
+  const requestLock = useRef(true);
+  useEffect(() => {
+    const controller = new AbortController();
+    api
+      .get("/garments", { signal: controller.signal })
+      .then(({ data }) => {
+        if (!controller.signal.aborted) {
+          setItems(data.items || []);
+          setLoaded(true);
+          setJson(data);
+        }
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted)
+          setNotice({ type: "error", message: errorMessage(error) });
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          requestLock.current = false;
+          setBusy("");
+        }
+      });
+    return () => controller.abort();
+  }, []);
   useEffect(
     () => () => {
       if (preview) URL.revokeObjectURL(preview);
@@ -99,10 +118,6 @@ export default function App() {
   const notify = (message, type = "success") => setNotice({ message, type });
   const run = async (action, callback) => {
     if (requestLock.current) return;
-    if (!userId.trim()) {
-      notify("먼저 사용자 ID를 입력해 주세요.", "error");
-      return;
-    }
     requestLock.current = true;
     setBusy(action);
     setNotice(null);
@@ -116,23 +131,16 @@ export default function App() {
     }
   };
   const load = async () => {
-    const { data } = await api.get("/garments", {
-      params: { user_id: userId.trim() },
-    });
+    const { data } = await api.get("/garments");
     setItems(data.items || []);
     setLoaded(true);
     setJson(data);
   };
-  const changeUser = (value) => {
-    setUserId(value);
-    setItems([]);
-    setResults([]);
-    setLoaded(false);
-    setSearched(false);
-    setJson(null);
-    setNotice(null);
-    setFilter("all");
-  };
+  const logout = () =>
+    run("logout", async () => {
+      await api.post("/auth/logout");
+      onLogout();
+    });
   const switchTab = (value) => {
     setTab(value);
     setFilter("all");
@@ -151,7 +159,6 @@ export default function App() {
     run("upload", async () => {
       if (!file) return;
       const body = new FormData();
-      body.append("user_id", userId.trim());
       body.append("file", file);
       const { data } = await api.post("/garments", body);
       setJson(data);
@@ -174,7 +181,6 @@ export default function App() {
     if (!query.trim()) return;
     run("recommend", async () => {
       const { data } = await api.post("/recommend", {
-        user_id: userId.trim(),
         query: query.trim(),
         top_k: 5,
       });
@@ -185,25 +191,12 @@ export default function App() {
       setFilter("all");
     });
   };
-  const createUser = (event) => {
-    event.preventDefault();
-    run("user", async () => {
-      const { data } = await api.post("/users", {
-        user_id: userId.trim(),
-        password,
-      });
-      setJson(data);
-      setPassword("");
-      setModal(null);
-      notify("사용자를 등록했습니다. 이제 옷을 추가해 보세요.");
-    });
-  };
   const deleteItem = (event) => {
     event.preventDefault();
     run("delete", async () => {
       const id = detail.items[detail.index].garment_id;
       const { data } = await api.delete(`/garments/${id}`, {
-        data: { user_id: userId.trim(), password: deletePassword },
+        data: { password: deletePassword },
       });
       setItems((old) => old.filter((item) => item.garment_id !== id));
       setResults((old) => old.filter((item) => item.garment_id !== id));
@@ -225,7 +218,6 @@ export default function App() {
     if (!busy) {
       setModal(null);
       setDetail(null);
-      setPassword("");
       setDeletePassword("");
     }
   };
@@ -277,25 +269,11 @@ export default function App() {
             <br />내 옷장에서 어울리는 옷을 찾아요.
           </p>
         </div>
-        <div className="account">
-          <label htmlFor="user-id">사용자 ID</label>
-          <input
-            id="user-id"
-            value={userId}
-            onChange={(event) => changeUser(event.target.value)}
-            disabled={!!busy}
-            autoComplete="username"
-          />
-          <p>ID별로 저장된 옷장을 조회합니다.</p>
-          <button
-            className="text-button"
-            onClick={() => {
-              setNotice(null);
-              setModal("user");
-            }}
-            disabled={!!busy}
-          >
-            새 사용자 등록 →
+        <div className="account signed-in">
+          <span className="account-label">로그인한 계정</span>
+          <strong className="account-name">{userId}</strong>
+          <button className="text-button" onClick={logout} disabled={!!busy}>
+            {busy === "logout" ? "로그아웃 중…" : "로그아웃"}
           </button>
         </div>
       </aside>
@@ -304,10 +282,13 @@ export default function App() {
           <span>
             MY WARDROBE / {tab === "wardrobe" ? "COLLECTION" : "AI STYLING"}
           </span>
-          <span className="user-chip">
-            <span className="user-dot" />
-            {userId.trim() || "사용자 ID를 입력하세요"}
-          </span>
+          <div className="topbar-actions">
+            {themeControl}
+            <span className="user-chip">
+              <span className="user-dot" />
+              {userId}
+            </span>
+          </div>
         </header>
         <div className="page-content">
           <div className="page-heading">
@@ -327,14 +308,17 @@ export default function App() {
               </p>
             </div>
             <button
-              className="primary"
+              className="primary add-garment-cta"
               onClick={() => {
                 setNotice(null);
                 setModal("upload");
               }}
               disabled={!!busy}
             >
-              ＋ 옷 추가하기
+              <span className="add-icon" aria-hidden="true">
+                ＋
+              </span>{" "}
+              옷 추가하기
             </button>
           </div>
           {!modal && status}
@@ -392,7 +376,7 @@ export default function App() {
                     id="style-query"
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
-                    placeholder="예: 쿨톤 스트릿하게, 편안한 주말 캐주얼"
+                    placeholder="예: 쿨톤, 웜톤"
                     required
                     disabled={!!busy}
                   />
@@ -406,11 +390,7 @@ export default function App() {
                   </button>
                 </div>
                 <div className="suggestions">
-                  {[
-                    "쿨톤 스트릿하게",
-                    "편안한 주말 캐주얼",
-                    "차분한 미니멀룩",
-                  ].map((text) => (
+                  {["쿨톤", "웜톤"].map((text) => (
                     <button
                       type="button"
                       key={text}
@@ -562,7 +542,7 @@ export default function App() {
                     : tab === "wardrobe"
                       ? loaded
                         ? "사진 한 장으로 나만의 컬렉션을 시작할 수 있어요."
-                        : "왼쪽 사용자 ID를 확인한 뒤 옷장을 불러오세요."
+                        : "다시 불러오기를 눌러 내 옷장을 확인하세요."
                       : searched
                         ? "옷을 등록하거나 다른 스타일로 다시 검색해 보세요."
                         : "위에 원하는 분위기를 입력하면 추천 결과가 여기에 표시돼요."}
@@ -606,7 +586,6 @@ export default function App() {
         <Modal
           title={
             {
-              user: "새 사용자 등록",
               upload: "내 옷장에 옷 추가",
               detail: "의류 상세",
               delete: "옷을 삭제할까요?",
@@ -616,37 +595,6 @@ export default function App() {
           busy={!!busy}
         >
           {status}
-          {modal === "user" && (
-            <form onSubmit={createUser}>
-              <p className="modal-description">
-                사용자 ID로 옷장을 관리하고, 비밀번호로 옷 삭제를 확인해요.
-              </p>
-              <label htmlFor="new-user">사용자 ID</label>
-              <input
-                id="new-user"
-                value={userId}
-                onChange={(event) => changeUser(event.target.value)}
-                disabled={!!busy}
-                required
-                autoComplete="username"
-              />
-              <label htmlFor="new-password">비밀번호</label>
-              <input
-                id="new-password"
-                type="password"
-                minLength={8}
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                required
-                disabled={!!busy}
-                autoComplete="new-password"
-              />
-              <p className="helper">8자 이상 입력해 주세요.</p>
-              <button className="primary full" disabled={!!busy}>
-                {busy === "user" ? "등록 중…" : "사용자 등록"}
-              </button>
-            </form>
-          )}
           {modal === "upload" && (
             <>
               <p className="modal-description">
@@ -700,9 +648,7 @@ export default function App() {
                   </button>
                 </div>
               )}
-              <p className="helper">
-                현재 사용자: {userId || "ID를 먼저 입력해 주세요"}
-              </p>
+              <p className="helper">현재 사용자: {userId}</p>
               <button
                 className="primary full"
                 onClick={register}
