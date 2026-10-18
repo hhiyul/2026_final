@@ -234,76 +234,58 @@ export default function WardrobeApp({ userId, themeControl, onLogout }) {
       <a className="skip-link" href="#main">
         본문으로 이동
       </a>
-      <aside className="sidebar">
-        <a href="#main" className="brand">
-          <span className="brand-mark">W</span>
-          <span>
-            wearly<span className="brand-caption">나를 위한 스마트 옷장</span>
-          </span>
+      <header className="app-header">
+        <a
+          href="#main"
+          className="brand"
+          aria-label="뭐입지 홈"
+          onClick={() => switchTab("wardrobe")}
+        >
+          뭐입지<span className="brand-dot">.</span>
         </a>
-        <p className="nav-caption">MY SPACE</p>
-        <nav aria-label="주요 메뉴">
+        <nav className="main-nav" aria-label="주요 메뉴">
           <button
             className={tab === "wardrobe" ? "nav-item active" : "nav-item"}
+            aria-current={tab === "wardrobe" ? "page" : undefined}
             onClick={() => switchTab("wardrobe")}
           >
-            <span aria-hidden="true">▦</span> 내 옷장{" "}
-            <span className="nav-count">{loaded ? items.length : "—"}</span>
+            <span aria-hidden="true">▦</span>내 옷장
           </button>
           <button
             className={tab === "recommend" ? "nav-item active" : "nav-item"}
+            aria-current={tab === "recommend" ? "page" : undefined}
             onClick={() => switchTab("recommend")}
           >
-            <span aria-hidden="true">✧</span> AI 추천
+            <span aria-hidden="true">✧</span>AI 추천
+          </button>
+          <button className="nav-item" onClick={() => setModal("account")}>
+            <span aria-hidden="true">◎</span>내 정보
           </button>
         </nav>
-        <div className="sidebar-tip">
-          <span>YOUR DAILY INSPIRATION</span>
-          <h3>
-            있는 옷으로,
-            <br />
-            새로운 나를 발견해요.
-          </h3>
-          <p>
-            원하는 분위기를 말하면
-            <br />내 옷장에서 어울리는 옷을 찾아요.
-          </p>
-        </div>
-        <div className="account signed-in">
-          <span className="account-label">로그인한 계정</span>
-          <strong className="account-name">{userId}</strong>
-          <button className="text-button" onClick={logout} disabled={!!busy}>
-            {busy === "logout" ? "로그아웃 중…" : "로그아웃"}
+        <div className="header-tools">
+          {themeControl}
+          <button
+            className="account-trigger"
+            onClick={() => setModal("account")}
+            aria-label="내 계정 보기"
+          >
+            {userId}
           </button>
         </div>
-      </aside>
+      </header>
       <main id="main">
-        <header className="topbar">
-          <span>
-            MY WARDROBE / {tab === "wardrobe" ? "COLLECTION" : "AI STYLING"}
-          </span>
-          <div className="topbar-actions">
-            {themeControl}
-            <span className="user-chip">
-              <span className="user-dot" />
-              {userId}
-            </span>
-          </div>
-        </header>
         <div className="page-content">
           <div className="page-heading">
             <div>
               <p className="eyebrow">
                 {tab === "wardrobe"
-                  ? "EVERY PIECE, YOUR STYLE"
-                  : "A LITTLE INSPIRATION"}
+                  ? "나만의 취향을 모아두는 곳"
+                  : "있는 옷으로, 새로운 발견"}
               </p>
-              <h1>
-                {tab === "wardrobe" ? "내 옷장" : "오늘, 어떤 분위기인가요?"}
-              </h1>
+              <h1>{tab === "wardrobe" ? "내 옷장" : "오늘 뭐입지?"}</h1>
               <p>
                 {tab === "wardrobe"
-                  ? "가지고 있는 옷을 한눈에 보고, 새로운 조합을 발견하세요."
+                  ? "잊고 있던 옷도, 자주 입는 옷도 한눈에."
                   : "원하는 스타일을 알려 주세요. 내 옷장에서 어울리는 옷을 찾아드릴게요."}
               </p>
             </div>
@@ -323,50 +305,19 @@ export default function WardrobeApp({ userId, themeControl, onLogout }) {
           </div>
           {!modal && status}
           {tab === "wardrobe" ? (
-            <section className="intro-banner">
-              <div>
-                <span className="eyebrow">YOUR PERSONAL COLLECTION</span>
-                <h2>취향이 모이는 공간</h2>
-                <p>
-                  옷을 등록하면 AI가 라벨을 분류해요.
-                  <br />
-                  아우터부터 모자까지, 찾기 쉽게 정리하세요.
-                </p>
-                <button
-                  className="banner-link"
-                  onClick={() => switchTab("recommend")}
-                >
-                  내 옷으로 추천받기 <span>↗</span>
-                </button>
-              </div>
-              <div className="wardrobe-art" aria-hidden="true">
-                <div className="art-card art-one">
-                  <svg viewBox="0 0 100 110">
-                    <path
-                      d="M30 15 10 30 22 48 32 42 32 96 68 96 68 42 78 48 90 30 70 15 61 20Q50 31 39 20Z"
-                      fill="#faf8f2"
-                      stroke="#9aa789"
-                      strokeWidth="2"
-                    />
-                  </svg>
-                  <span>MY FAVORITES</span>
-                </div>
-                <div className="art-card art-two">
-                  <svg viewBox="0 0 100 110">
-                    <path
-                      d="M29 12H71L78 98H55L50 48 45 98H22Z"
-                      fill="#55664f"
-                    />
-                    <path
-                      d="M30 24H70M50 14V42"
-                      stroke="#98a78f"
-                      strokeWidth="2"
-                    />
-                  </svg>
-                  <span>EVERYDAY ESSENTIALS</span>
-                </div>
-              </div>
-            </section>
+            <button
+              className="discovery-link"
+              onClick={() => switchTab("recommend")}
+            >
+              <span className="discovery-symbol" aria-hidden="true">
+                ✧
+              </span>
+              <span>
+                <strong>오늘의 옷, 같이 골라볼까요?</strong>
+                <small>내 옷장에서 AI 추천받기</small>
+              </span>
+              <span aria-hidden="true">↗</span>
+            </button>
           ) : (
             <section className="recommend-box">
               <form onSubmit={recommend}>
@@ -394,6 +345,7 @@ export default function WardrobeApp({ userId, themeControl, onLogout }) {
                     <button
                       type="button"
                       key={text}
+                      aria-pressed={query === text}
                       onClick={() => setQuery(text)}
                       disabled={!!busy}
                     >
@@ -402,8 +354,7 @@ export default function WardrobeApp({ userId, themeControl, onLogout }) {
                   ))}
                 </div>
                 <p className="helper">
-                  저장된 옷에서 최대 5개를 추천합니다. 라벨 안에서는 추천 순위를
-                  유지해요.
+                  내 옷장에서 찾은 후보를 종류별로 모아 보여드려요.
                 </p>
               </form>
             </section>
@@ -414,7 +365,7 @@ export default function WardrobeApp({ userId, themeControl, onLogout }) {
           >
             <div className="section-heading">
               <h2>
-                {tab === "wardrobe" ? "나의 컬렉션" : "추천 결과"}{" "}
+                {tab === "wardrobe" ? "옷 모아보기" : "추천 결과"}{" "}
                 <span className="total">{activeItems.length}</span>
               </h2>
               {tab === "wardrobe" && (
@@ -505,7 +456,7 @@ export default function WardrobeApp({ userId, themeControl, onLogout }) {
                             <strong>{label(item.category)}</strong>
                             <small>
                               {tab === "recommend"
-                                ? `유사도 점수 ${item.score ?? "—"}`
+                                ? "내 취향에 맞는 후보"
                                 : item.created_at
                                   ? item.created_at
                                       .slice(0, 10)
@@ -570,15 +521,8 @@ export default function WardrobeApp({ userId, themeControl, onLogout }) {
               </div>
             )}
           </section>
-          <details className="debug">
-            <summary>응답 데이터 확인</summary>
-            <pre>
-              {JSON.stringify(json, null, 2) ||
-                "아직 요청한 데이터가 없습니다."}
-            </pre>
-          </details>
           <footer>
-            wearly <span>매일의 선택을 조금 더 가볍게.</span>
+            뭐입지 <span>내 옷으로, 나답게.</span>
           </footer>
         </div>
       </main>
@@ -586,6 +530,7 @@ export default function WardrobeApp({ userId, themeControl, onLogout }) {
         <Modal
           title={
             {
+              account: "내 정보",
               upload: "내 옷장에 옷 추가",
               detail: "의류 상세",
               delete: "옷을 삭제할까요?",
@@ -595,6 +540,30 @@ export default function WardrobeApp({ userId, themeControl, onLogout }) {
           busy={!!busy}
         >
           {status}
+          {modal === "account" && (
+            <section className="account-panel">
+              <span className="account-avatar" aria-hidden="true">
+                ◎
+              </span>
+              <h3>{userId}</h3>
+              <p>나만의 옷장에 {items.length}벌이 있어요.</p>
+              <div className="account-theme">화면 설정 {themeControl}</div>
+              <button
+                className="secondary full"
+                onClick={logout}
+                disabled={!!busy}
+              >
+                {busy === "logout" ? "로그아웃 중…" : "로그아웃"}
+              </button>
+              <details className="debug">
+                <summary>최근 응답 데이터</summary>
+                <pre>
+                  {JSON.stringify(json, null, 2) ||
+                    "아직 요청한 데이터가 없습니다."}
+                </pre>
+              </details>
+            </section>
+          )}
           {modal === "upload" && (
             <>
               <p className="modal-description">
@@ -628,8 +597,8 @@ export default function WardrobeApp({ userId, themeControl, onLogout }) {
                 ) : (
                   <>
                     <span className="upload-symbol">＋</span>
-                    <strong>사진을 선택하거나 여기로 끌어오세요</strong>
-                    <span>한 번에 이미지 1장</span>
+                    <strong>사진을 선택해 주세요</strong>
+                    <span>사진 보관함에서 선택 · PC에서는 끌어놓기도 가능</span>
                   </>
                 )}
               </button>
@@ -648,7 +617,11 @@ export default function WardrobeApp({ userId, themeControl, onLogout }) {
                   </button>
                 </div>
               )}
-              <p className="helper">현재 사용자: {userId}</p>
+              <p className="helper" role="status">
+                {busy === "upload"
+                  ? "분석 중이에요. 사진에 따라 잠시 걸릴 수 있어요."
+                  : "사진 확인 후 등록하면 내 옷장에 저장돼요."}
+              </p>
               <button
                 className="primary full"
                 onClick={register}

@@ -68,12 +68,12 @@ function AuthForm({ onLogin, sessionMessage }) {
   return (
     <div className="auth-layout">
       <section className="auth-intro">
-        <span className="brand-mark">W</span>
-        <p className="eyebrow">YOUR OWN WARDROBE</p>
+        <span className="brand-mark">뭐</span>
+        <p className="eyebrow">내 옷으로, 나답게.</p>
         <h1>
-          나만의 옷장,
+          오늘도,
           <br />
-          매일 새로운 스타일.
+          뭐입지?
         </h1>
         <p>
           가지고 있는 옷을 모으고,
@@ -189,9 +189,9 @@ export default function AuthApp() {
     document.documentElement.dataset.theme = theme;
     document
       .querySelector('meta[name="theme-color"]')
-      ?.setAttribute("content", theme === "dark" ? "#171e1b" : "#395a3e");
+      ?.setAttribute("content", theme === "dark" ? "#191a18" : "#f8f7f3");
     try {
-      localStorage.setItem("wearly-theme", theme);
+      localStorage.setItem("mwoipji-theme", theme);
     } catch {
       /* Storage may be disabled. */
     }
@@ -246,7 +246,7 @@ export default function AuthApp() {
     return (
       <div className="auth-page">
         <header className="auth-header">
-          <span className="brand">wearly</span>
+          <span className="brand">뭐입지</span>
           {themeControl}
         </header>
         <div className="connection-state" role="status">
@@ -286,7 +286,7 @@ export default function AuthApp() {
   return (
     <div className="auth-page">
       <header className="auth-header">
-        <span className="brand">wearly</span>
+        <span className="brand">뭐입지</span>
         {themeControl}
       </header>
       <AuthForm

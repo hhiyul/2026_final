@@ -1,13 +1,13 @@
 :root {
   color-scheme: light;
-  --page: #f8f9f6;
+  --page: #f8f7f3;
   --surface: #ffffff;
-  --text: #26332d;
-  --muted: #65725f;
-  --border: #dce2d5;
-  --soft: #edf1e6;
-  --accent: #395a3e;
-  --accent-hover: #29472e;
+  --text: #242720;
+  --muted: #676b62;
+  --border: #dedfd7;
+  --soft: #eeefe8;
+  --accent: #374c38;
+  --accent-hover: #263c27;
   --on-accent: #ffffff;
   --accent-text: #46643c;
   --accent-soft: #dfe8d6;
@@ -17,18 +17,18 @@
   --error-bg: #fff0ec;
   --error-text: #983e30;
   --overlay-surface: #fffffff0;
-  --upload-bg: #f4be50;
-  --upload-hover: #e9aa2d;
-  --upload-text: #29200c;
+  --upload-bg: #d5ef68;
+  --upload-hover: #c1df50;
+  --upload-text: #233016;
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --page: #111713;
-  --surface: #1a231d;
+  --page: #191a18;
+  --surface: #232620;
   --text: #eef3e9;
   --muted: #b0beaa;
   --border: #3a483b;
-  --soft: #253125;
+  --soft: #2d3328;
   --accent: #afcf96;
   --accent-hover: #c2dfa8;
   --on-accent: #17230f;
@@ -40,8 +40,8 @@
   --error-bg: #442724;
   --error-text: #ffc2b4;
   --overlay-surface: #243025f2;
-  --upload-bg: #f5c45c;
-  --upload-hover: #ffda80;
+  --upload-bg: #d5ef68;
+  --upload-hover: #e0f58f;
   --upload-text: #28200d;
 }
 :root {
@@ -129,4 +129,14 @@ input {
 }
 ::selection {
   background: var(--accent-soft);
+}
+
+html {
+  scroll-padding-top: 100px;
+}
+body:has(dialog[open]) {
+  overflow: hidden;
+}
+input {
+  font-size: 16px;
 }
