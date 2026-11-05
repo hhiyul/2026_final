@@ -149,7 +149,7 @@ class AnalyzeResponse(BaseModel):
 class RecommendRequest(BaseModel):
     query: str = Field(..., description="자연어 추천 쿼리 (예: '쿨톤')")
     category: Optional[str] = Field(None, description="outerwear|top|bottom|headwear 필터")
-    top_k: int = Field(5, ge=1, le=20, description="반환할 상위 결과 개수")
+    top_k: int = Field(5, ge=1, le=5, description="라벨별 최대 추천 개수")
 
 
 class RecommendResultItem(BaseModel):
@@ -292,39 +292,72 @@ async def analyze_outfit(file: UploadFile = File(...), user_id: str = Depends(au
     )
 
 
-@app.post("/recommend", summary="코디 추천 (MongoDB 임베딩 유사도 랭킹)", response_model=RecommendResponse)
-async def recommend_outfit(req: RecommendRequest, user_id: str = Depends(auth.current_user)):
-    # ✅ MongoDB에서 user_id에 해당하는 옷 데이터 전체 조회 (_id 제외)
+
+@app.post("/recommend", summary="라벨별 코디 추천", response_model=RecommendResponse)
+async def recommend_outfit(
+        req: RecommendRequest,
+        user_id: str = Depends(auth.current_user),
+):
     rows = list(garments_collection.find({"user_id": user_id}, {"_id": 0}))
 
     if not rows:
         raise HTTPException(
             status_code=404,
-            detail=f"해당 사용자({user_id})의 등록된 옷이 없습니다. 먼저 /garments 로 옷을 등록해 주세요.",
+            detail="등록된 옷이 없습니다. 먼저 옷을 등록해 주세요.",
         )
 
-    embs = np.array([r["embedding"] for r in rows], dtype=np.float32)
+    embs = np.array([row["embedding"] for row in rows], dtype=np.float32)
+    mask = (
+        [row["category"] == req.category for row in rows]
+        if req.category
+        else None
+    )
 
-    # 카테고리 필터 마스크
-    mask = [r["category"] == req.category for r in rows] if req.category else None
+    hits = pipe.recommend(
+        req.query,
+        embs,
+        top_k=len(rows),
+        mask=mask,
+    )
 
-    # 추천 연산 실행
-    hits: List[Hit] = pipe.recommend(req.query, embs, top_k=req.top_k, mask=mask)
+    per_label_limit = min(req.top_k, 5)
+    grouped = {}
 
-    results = []
-    for h in hits:
-        matched_row = rows[h.index]
-        results.append(
+    for hit in hits:
+        row = rows[hit.index]
+        category = row["category"]
+        items = grouped.setdefault(category, [])
+
+        if len(items) >= per_label_limit:
+            continue
+
+        items.append(
             RecommendResultItem(
-                garment_id=matched_row["garment_id"],
-                category=matched_row["category"],
-                rank=h.rank,
-                score=round(h.score, 4),
-                thumbnail_url=matched_row["thumbnail_url"],
-                bbox=matched_row["bbox"],
-                created_at=matched_row.get("created_at", ""),
+                garment_id=row["garment_id"],
+                category=category,
+                rank=len(items) + 1,
+                score=round(hit.score, 4),
+                thumbnail_url=row["thumbnail_url"],
+                bbox=row["bbox"],
+                created_at=row.get("created_at", ""),
             )
         )
+
+    label_order = {
+        "outerwear": 0,
+        "top": 1,
+        "bottom": 2,
+        "headwear": 3,
+    }
+
+    results = [
+        item
+        for category in sorted(
+            grouped,
+            key=lambda category: (label_order.get(category, 99), category),
+        )
+        for item in grouped[category]
+    ]
 
     return RecommendResponse(
         query=req.query,
